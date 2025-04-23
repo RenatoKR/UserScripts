@@ -1,0 +1,96 @@
+// ==UserScript==
+// @name         Konviva Vimeo Autoplay (Classroom) with Delayed Unmute
+// @namespace    http://tampermonkey.net/
+// @version      1.2
+// @description  Autoplays Vimeo videos in Konviva classroom, then unmute them after a delay so they play with sound.
+// @author       YourName
+// @match        *://universidademv.com.br/lms*
+// @grant        none
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    // Initially mute so that browsers allow autoplay
+    const AUTOPLAY_PARAMS = {
+        autoplay: 1,
+        muted: 1,
+        background: 0
+    };
+
+    // Function to update the Vimeo iframe URL with our desired parameters
+    function modifyVimeoPlayer() {
+        const iframe = document.querySelector('iframe#vimeoContentlink[src*="vimeo.com"]');
+        if (iframe) {
+            const url = new URL(iframe.src);
+
+            // Preserve any existing fragment (the part after '#')
+            const hash = url.hash;
+            url.hash = '';
+
+            // Insert or update the autoplay parameters
+            Object.entries(AUTOPLAY_PARAMS).forEach(([key, value]) => {
+                url.searchParams.set(key, value);
+            });
+
+            // Restore the fragment if it existed
+            url.hash = hash;
+
+            if (url.href !== iframe.src) {
+                iframe.src = url.href;
+            }
+        }
+    }
+
+    // Function to attempt unmuting the player using the Vimeo Player API
+    function unmuteVimeoPlayer() {
+        const iframe = document.querySelector('iframe#vimeoContentlink[src*="vimeo.com"]');
+        if (iframe && typeof Vimeo !== 'undefined') {
+            let player = new Vimeo.Player(iframe);
+            // Try to unmute – this returns a promise that you can catch errors on
+            player.unmute().catch(function(error) {
+                console.error('Failed to unmute the video:', error);
+            });
+        } else {
+            console.warn('Vimeo API is not available or the Vimeo iframe was not found.');
+        }
+    }
+
+    // Use a MutationObserver to detect when the classroom content and the Vimeo iframe load
+    const observer = new MutationObserver(mutations => {
+        mutations.forEach(() => {
+            if (document.querySelector('#aulaPlayer')) {
+                modifyVimeoPlayer();
+                // After 5 seconds, try to unmute the Vimeo player.
+                setTimeout(unmuteVimeoPlayer, 5000);
+            }
+        });
+    });
+
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true
+    });
+
+    // Initial check in case the classroom is directly accessible
+    if (document.querySelector('#aulaPlayer')) {
+        modifyVimeoPlayer();
+        setTimeout(unmuteVimeoPlayer, 5000);
+    }
+
+    // In some cases, the Angular controller may handle playback; here we force play if needed.
+    setTimeout(() => {
+        const playerDiv = document.querySelector('#aulaPlayer');
+        if (playerDiv) {
+            const scope = angular.element(playerDiv).scope();
+            if (scope && scope.conteudo) {
+                scope.$apply(() => {
+                    scope.conteudo.concluido = false;
+                    if (scope.videoController) {
+                        scope.videoController.play();
+                    }
+                });
+            }
+        }
+    }, 1000);
+})();
