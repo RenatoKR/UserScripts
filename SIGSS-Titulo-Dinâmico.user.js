@@ -5,6 +5,9 @@
 // @description  Define o título da página baseado no conteúdo do elemento sigss-title
 // @match        */sigss/*
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/ShadyBS/UserScripts/main/SIGSS-Titulo-Dinâmico.user.js
+// @downloadURL  https://raw.githubusercontent.com/ShadyBS/UserScripts/main/SIGSS-Titulo-Dinâmico.user.js
+// @supportURL   https://github.com/ShadyBS/UserScripts/issues
 // ==/UserScript==
 
 (function() {
