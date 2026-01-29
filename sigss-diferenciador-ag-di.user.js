@@ -3,7 +3,7 @@
 // @namespace    http://tampermonkey.net/
 // @version      15.0
 // @description  Diferencia agendamentos (AG) de demanda imediata (DI) automaticamente
-// @match        https://c10085prd.cloudmv.com.br/sigss/atendimentoConsultaAgenda*
+// @match        *://*/sigss/atendimentoConsultaAgenda*
 // @grant        none
 // @updateURL    https://raw.githubusercontent.com/ShadyBS/UserScripts/main/sigss-diferenciador-ag-di.user.js
 // @downloadURL  https://raw.githubusercontent.com/ShadyBS/UserScripts/main/sigss-diferenciador-ag-di.user.js
