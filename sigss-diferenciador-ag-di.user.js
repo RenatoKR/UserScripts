@@ -1,9 +1,10 @@
 // ==UserScript==
 // @name         SIGSS Diferenciador AG／DI - Automático
 // @namespace    http://tampermonkey.net/
-// @version      15.0
+// @version      15.1
 // @description  Diferencia agendamentos (AG) de demanda imediata (DI) automaticamente
 // @match        *://*/sigss/atendimentoConsultaAgenda*
+// @match        *://*/sigss/atendimentoOdontoAgenda*
 // @grant        none
 // @updateURL    https://raw.githubusercontent.com/ShadyBS/UserScripts/main/sigss-diferenciador-ag-di.user.js
 // @downloadURL  https://raw.githubusercontent.com/ShadyBS/UserScripts/main/sigss-diferenciador-ag-di.user.js
