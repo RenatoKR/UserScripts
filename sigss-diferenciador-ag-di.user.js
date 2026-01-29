@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SIGSS Diferenciador AG／DI - Automático
 // @namespace    http://tampermonkey.net/
-// @version      15.1
+// @version      16.1
 // @description  Diferencia agendamentos (AG) de demanda imediata (DI) automaticamente
 // @match        *://*/sigss/atendimentoConsultaAgenda*
 // @match        *://*/sigss/atendimentoOdontoAgenda*
@@ -15,7 +15,7 @@
     'use strict';
 
     // ========== CONFIGURAÇÃO DE DEBUG ==========
-    const DEBUG = true; // Mude para false para desativar logs
+    const DEBUG = true;
 
     function log(...args) {
         if (DEBUG) console.log('[AG/DI]', ...args);
@@ -26,18 +26,267 @@
     }
     // ===========================================
 
-    // ========== ⭐ CONFIGURAÇÃO DE PALAVRAS-CHAVE PARA DI ⭐ ==========
-    // Se o nome do turno contiver QUALQUER uma dessas palavras, será DI
-    // (mesmo que o campo infoNomeTurno exista)
-    const PALAVRAS_CHAVE_DI = [
-        'DEMANDA',
-        'ESPONTANEA',
-        'IMEDIATA',
-        'LIVRE',
+    // ========== GERENCIAMENTO DE CONFIGURAÇÕES ==========
+    const CONFIG_KEY = 'agdi_palavras_chave';
+    const DEFAULT_PALAVRAS = [
         'SEM AGENDAMENTO'
-        // Adicione mais palavras aqui se necessário
     ];
-    // ==============================================================
+
+    function carregarPalavrasChave() {
+        try {
+            const saved = localStorage.getItem(CONFIG_KEY);
+            if (saved) {
+                const palavras = JSON.parse(saved);
+                log('📋 Palavras-chave carregadas:', palavras);
+                return palavras;
+            }
+        } catch (e) {
+            logError('Erro ao carregar palavras-chave:', e);
+        }
+        log('📋 Usando palavras-chave padrão');
+        return DEFAULT_PALAVRAS;
+    }
+
+    function salvarPalavrasChave(palavras) {
+        try {
+            localStorage.setItem(CONFIG_KEY, JSON.stringify(palavras));
+            log('💾 Palavras-chave salvas:', palavras);
+            return true;
+        } catch (e) {
+            logError('Erro ao salvar palavras-chave:', e);
+            return false;
+        }
+    }
+
+    let PALAVRAS_CHAVE_DI = carregarPalavrasChave();
+    // ====================================================
+
+    // ========== INTERFACE DE CONFIGURAÇÃO ==========
+    function criarBotaoConfig() {
+        // Verificar se já existe
+        if (document.getElementById('agdi-config-btn')) {
+            log('⚠️ Botão de configuração já existe');
+            return;
+        }
+
+        log('🔧 Criando botão de configuração...');
+
+        const botao = document.createElement('button');
+        botao.id = 'agdi-config-btn';
+        botao.innerHTML = '⚙️ AG/DI';
+        botao.title = 'Configurar palavras-chave DI';
+        botao.style.cssText = `
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 10000;
+            padding: 10px 15px;
+            background-color: #2196F3;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 14px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+            transition: background-color 0.3s;
+        `;
+
+        botao.addEventListener('mouseenter', () => {
+            botao.style.backgroundColor = '#1976D2';
+        });
+
+        botao.addEventListener('mouseleave', () => {
+            botao.style.backgroundColor = '#2196F3';
+        });
+
+        botao.addEventListener('click', abrirModalConfig);
+
+        document.body.appendChild(botao);
+        log('✅ Botão de configuração adicionado');
+    }
+
+    function abrirModalConfig() {
+        log('🔧 Abrindo modal de configuração...');
+
+        // Remover modal existente se houver
+        const modalExistente = document.getElementById('agdi-config-modal');
+        if (modalExistente) {
+            modalExistente.remove();
+        }
+
+        const modal = document.createElement('div');
+        modal.id = 'agdi-config-modal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+            z-index: 10001;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        `;
+
+        const conteudo = document.createElement('div');
+        conteudo.style.cssText = `
+            background-color: white;
+            padding: 25px;
+            border-radius: 8px;
+            width: 500px;
+            max-width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        `;
+
+        const titulo = document.createElement('h2');
+        titulo.textContent = '⚙️ Configuração AG/DI';
+        titulo.style.cssText = `
+            margin: 0 0 15px 0;
+            color: #333;
+            font-size: 20px;
+        `;
+
+        const descricao = document.createElement('p');
+        descricao.textContent = 'Palavras-chave que identificam Demanda Imediata (DI). Digite uma por linha:';
+        descricao.style.cssText = `
+            margin: 0 0 15px 0;
+            color: #666;
+            font-size: 14px;
+        `;
+
+        const textarea = document.createElement('textarea');
+        textarea.id = 'agdi-keywords-input';
+        textarea.value = PALAVRAS_CHAVE_DI.join('\n');
+        textarea.style.cssText = `
+            width: 100%;
+            height: 200px;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 14px;
+            resize: vertical;
+            box-sizing: border-box;
+        `;
+
+        const aviso = document.createElement('p');
+        aviso.innerHTML = '<strong>Nota:</strong> Não diferencia maiúsculas/minúsculas. Cada linha é uma palavra-chave.';
+        aviso.style.cssText = `
+            margin: 10px 0;
+            color: #666;
+            font-size: 12px;
+            font-style: italic;
+        `;
+
+        const botoes = document.createElement('div');
+        botoes.style.cssText = `
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+            justify-content: flex-end;
+        `;
+
+        const btnSalvar = document.createElement('button');
+        btnSalvar.textContent = '💾 Salvar';
+        btnSalvar.style.cssText = `
+            padding: 10px 20px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 14px;
+        `;
+
+        const btnRestaurar = document.createElement('button');
+        btnRestaurar.textContent = '🔄 Restaurar Padrão';
+        btnRestaurar.style.cssText = `
+            padding: 10px 20px;
+            background-color: #FF9800;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 14px;
+        `;
+
+        const btnCancelar = document.createElement('button');
+        btnCancelar.textContent = '❌ Cancelar';
+        btnCancelar.style.cssText = `
+            padding: 10px 20px;
+            background-color: #f44336;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 14px;
+        `;
+
+        btnSalvar.addEventListener('click', () => {
+            const texto = textarea.value;
+            const palavras = texto
+                .split('\n')
+                .map(p => p.trim())
+                .filter(p => p.length > 0);
+
+            if (palavras.length === 0) {
+                alert('❌ Adicione pelo menos uma palavra-chave!');
+                return;
+            }
+
+            PALAVRAS_CHAVE_DI = palavras;
+            if (salvarPalavrasChave(palavras)) {
+                alert('✅ Configurações salvas! Recarregue a página para aplicar.');
+                modal.remove();
+            } else {
+                alert('❌ Erro ao salvar configurações!');
+            }
+        });
+
+        btnRestaurar.addEventListener('click', () => {
+            if (confirm('Restaurar palavras-chave padrão?')) {
+                textarea.value = DEFAULT_PALAVRAS.join('\n');
+            }
+        });
+
+        btnCancelar.addEventListener('click', () => {
+            modal.remove();
+        });
+
+        // Fechar ao clicar fora
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                modal.remove();
+            }
+        });
+
+        botoes.appendChild(btnRestaurar);
+        botoes.appendChild(btnCancelar);
+        botoes.appendChild(btnSalvar);
+
+        conteudo.appendChild(titulo);
+        conteudo.appendChild(descricao);
+        conteudo.appendChild(textarea);
+        conteudo.appendChild(aviso);
+        conteudo.appendChild(botoes);
+
+        modal.appendChild(conteudo);
+        document.body.appendChild(modal);
+
+        // Focar no textarea
+        textarea.focus();
+        textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+
+        log('✅ Modal de configuração aberto');
+    }
+    // ==============================================
 
     log('🚀 Script carregado - modo automático');
 
@@ -45,15 +294,12 @@
     const tipoPorAgendamento = new Map();
     let processandoLinhas = false;
 
-    // ========== ⭐ FUNÇÃO PARA VERIFICAR SE É DI ⭐ ==========
     function ehDemandaImediata(dto) {
-        // Se não tem infoNomeTurno, é DI
         if (!dto.infoNomeTurno) {
             log('      → Sem infoNomeTurno = DI');
             return true;
         }
 
-        // Se tem infoNomeTurno, verificar se contém palavras-chave de DI
         const nomeTurnoUpper = dto.infoNomeTurno.toUpperCase();
 
         for (const palavra of PALAVRAS_CHAVE_DI) {
@@ -63,13 +309,10 @@
             }
         }
 
-        // Se tem infoNomeTurno e não contém palavras-chave de DI, é AG
         log(`      → infoNomeTurno="${dto.infoNomeTurno}" sem palavras-chave = AG`);
         return false;
     }
-    // ======================================================
 
-    // Função para buscar informações de turno em background
     function buscarInfoTurno(agcoPK) {
         log(`📡 Iniciando busca para ${agcoPK}`);
 
@@ -93,11 +336,9 @@
                         const dto = response.atendimentoConsultaInfoDialogDTO;
 
                         if (dto) {
-                            // ========== ⭐ USAR A FUNÇÃO PARA DETERMINAR TIPO ⭐ ==========
                             const isDI = ehDemandaImediata(dto);
                             const tipo = isDI ? 'DI' : 'AG';
                             const nomeTurno = dto.infoNomeTurno || 'DEMANDA IMEDIATA';
-                            // ===========================================================
 
                             const info = {
                                 tipo: tipo,
@@ -140,7 +381,6 @@
         processandoLinhas = true;
 
         try {
-            // Tentar vários seletores possíveis
             const possiveisGrids = [
                 '#gridatendimento',
                 '#grid_busca',
@@ -169,7 +409,6 @@
             log(`✅ Grid encontrada com seletor: ${seletorUsado}`);
             log('   ID da grid:', grid.id);
 
-            // Tentar vários seletores de linhas
             const possiveisLinhas = [
                 '.ui-widget-content',
                 'tbody tr:not(.jqgfirstrow)',
@@ -213,7 +452,6 @@
 
                 log(`   🔍 Processando linha ${index}: ID=${rowId}`);
 
-                // Tentar vários seletores para a célula do nome
                 const possiveisCelulas = [
                     'td[aria-describedby="gridatendimento_entiNome"]',
                     'td[aria-describedby*="entiNome"]',
@@ -240,7 +478,6 @@
 
                 log(`      ✅ Célula do nome encontrada com: ${seletorCelulaUsado}`);
 
-                // Se já tem indicador, apenas atualizar contadores
                 const indicadorExistente = celulaNome.querySelector('.indicador-agendamento');
                 if (indicadorExistente) {
                     const texto = indicadorExistente.textContent.trim();
@@ -250,17 +487,14 @@
                     return;
                 }
 
-                // Buscar informação do tipo
                 const infoTipo = tipoPorAgendamento.get(rowId);
 
                 if (!infoTipo) {
-                    // Se não temos informação, buscar em background
                     pendentes++;
                     log(`      📡 Sem informação em cache, buscando...`);
 
                     buscarInfoTurno(rowId).then(() => {
                         log(`      ✅ Informação obtida, adicionando indicador`);
-                        // Após buscar, adicionar indicador
                         setTimeout(() => adicionarIndicadorNaLinha(linha, rowId), 50);
                     }).catch(err => {
                         logError(`      ❌ Erro ao buscar info de ${rowId}:`, err);
@@ -292,7 +526,6 @@
             return;
         }
 
-        // Tentar vários seletores para a célula do nome
         const possiveisCelulas = [
             'td[aria-describedby="gridatendimento_entiNome"]',
             'td[aria-describedby*="entiNome"]',
@@ -325,7 +558,6 @@
 
         log(`      ✅ Criando badge ${indicador} (${corFundo})`);
 
-        // Cria o indicador
         const spanIndicador = document.createElement('span');
         spanIndicador.className = 'indicador-agendamento';
         spanIndicador.textContent = indicador;
@@ -342,7 +574,6 @@
             cursor: help;
         `;
 
-        // Adiciona o indicador
         const divNome = celulaNome.querySelector('div.layout-row');
         if (divNome) {
             log(`      ✅ Adicionando em div.layout-row`);
@@ -355,7 +586,6 @@
         log(`      🎉 Indicador ${indicador} adicionado com sucesso!`);
     }
 
-    // Observer para detectar mudanças na grid
     const observer = new MutationObserver((mutations) => {
         log('👁️ Observer detectou mudanças');
         let precisaProcessar = false;
@@ -377,7 +607,6 @@
         }
     });
 
-    // Aguardar a grid carregar e começar a observar
     let tentativas = 0;
     const maxTentativas = 20;
 
@@ -421,6 +650,24 @@
             log('   IDs disponíveis:', Array.from(document.querySelectorAll('[id]')).map(el => el.id));
         }
     }, 500);
+
+    // ========== ADICIONAR BOTÃO APÓS DOM CARREGAR ==========
+    function tentarAdicionarBotao() {
+        if (document.body) {
+            criarBotaoConfig();
+        } else {
+            log('⏳ Aguardando document.body...');
+            setTimeout(tentarAdicionarBotao, 100);
+        }
+    }
+
+    // Iniciar tentativa de adicionar botão
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', tentarAdicionarBotao);
+    } else {
+        tentarAdicionarBotao();
+    }
+    // ========================================================
 
     log('✅ Script instalado - aguardando grid...');
 })();
