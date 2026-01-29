@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         SIGSS - Título Dinâmico
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.1
 // @description  Define o título da página baseado no conteúdo do elemento sigss-title
-// @match        */sigss/*
+// @match        *://*/sigss/*
 // @grant        none
 // @updateURL    https://raw.githubusercontent.com/ShadyBS/UserScripts/main/SIGSS-Titulo-Dinâmico.user.js
 // @downloadURL  https://raw.githubusercontent.com/ShadyBS/UserScripts/main/SIGSS-Titulo-Dinâmico.user.js
