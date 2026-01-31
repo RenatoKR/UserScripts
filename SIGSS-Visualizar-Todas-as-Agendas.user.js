@@ -163,7 +163,7 @@
                 target.push({ idp: val.split('-')[0], ids: val.split('-')[1], nome: cleanProfName($(this).text()), full: val });
             }
         });
-        if (!target.length) return alert('Nenhum médico salvo nesta unidade.');
+        if (!target.length) return alert('Nenhum profissional salvo nesta unidade.');
         runScript(target);
     }
 
