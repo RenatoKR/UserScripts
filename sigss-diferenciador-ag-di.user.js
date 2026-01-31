@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         SIGSS Diferenciador AG/DI - Otimizado Paralelo (FIX)
 // @namespace    http://tampermonkey.net/
-// @version      19.1
+// @author       Renato Krebs Rosa
+// @version      19.2
 // @description  Diferencia agendamentos (AG) de demanda imediata (DI) com requisições paralelas controladas
 // @match        *://*/sigss/atendimentoConsultaAgenda*
 // @match        *://*/sigss/atendimentoOdontoAgenda*
-// @updateURL    https://raw.githubusercontent.com/ShadyBS/UserScripts/main/sigss-diferenciador-ag-di.user.js
-// @downloadURL  https://raw.githubusercontent.com/ShadyBS/UserScripts/main/sigss-diferenciador-ag-di.user.js
+// @updateURL    https://raw.githubusercontent.com/RenatoKR/UserScripts/main/sigss-diferenciador-ag-di.user.js
+// @downloadURL  https://raw.githubusercontent.com/RenatoKR/UserScripts/main/sigss-diferenciador-ag-di.user.js
 // @grant        none
 // ==/UserScript==
 
@@ -20,7 +21,7 @@
     function log(...args) { if (DEBUG) console.log('[AG/DI]', ...args); }
 
     // ========== ESTILOS ==========
-    const STYLES = `.btn-sigss-compact{padding:6px 12px;border:1px solid transparent;border-radius:4px;cursor:pointer;font-size:11px;font-weight:bold;color:white;display:inline-flex;align-items:center;gap:4px;height:30px;transition:background 0.2s;text-transform:uppercase;font-family:sans-serif;text-decoration:none;margin-left:5px}.btn-agdi{background-color:#FF9800;border-color:#F57C00}.btn-agdi:hover{background-color:#FB8C00}.btn-agdi-odonto{height:35px;margin-top:5px;vertical-align:middle}#agdi-config-modal{position:fixed;top:0;left:0;width:100%;height:100%;background-color:rgba(0,0,0,0.5);z-index:10001;display:none;justify-content:center;align-items:center;font-family:sans-serif}.indicador-agendamento{float:right;margin-left:5px;padding:2px 6px;border-radius:3px;font-size:10px;font-weight:bold;cursor:help;text-transform:uppercase;color:white}`;
+    const STYLES = `.btn-sigss-compact{padding:6px 12px;border:1px solid transparent;border-radius:4px;cursor:pointer;font-size:11px;font-weight:bold;color:white;display:inline-flex;align-items:center;gap:4px;height:30px;transition:background 0.2s;text-transform:uppercase;font-family:sans-serif;text-decoration:none;margin-left:5px;box-sizing:border-box}.btn-agdi{background-color:#FF9800;border-color:#F57C00}.btn-agdi:hover{background-color:#FB8C00}.btn-agdi-odonto{width:100%!important;height:28px!important;margin:0!important;margin-top:5px!important}#agdi-config-modal{position:fixed;top:0;left:0;width:100%;height:100%;background-color:rgba(0,0,0,0.5);z-index:10001;display:none;justify-content:center;align-items:center;font-family:sans-serif}.indicador-agendamento{float:right;margin-left:5px;padding:2px 6px;border-radius:3px;font-size:10px;font-weight:bold;cursor:help;text-transform:uppercase;color:white}`;
 
     // ========== CONFIG ==========
     const CONFIG_KEY = 'agdi_palavras_chave';
@@ -92,7 +93,7 @@
             m.innerHTML = `
                 <div style="background:white;padding:25px;border-radius:8px;width:500px;box-shadow:0 4px 15px rgba(0,0,0,0.3);">
                     <h2 style="margin:0 0 15px 0;color:#333;">⚙️ Configuração AG/DI</h2>
-                    <p style="margin-bottom:10px;color:#666;">Consultas são marcadas como DI se foram agendas marcando o combobox DI ou se o nome do turno contiver as palavras-chave abaixo.\nPalavras-chave (uma por linha):</p>
+                    <p style="margin-bottom:10px;color:#666;">Consultas são marcadas como DI se foram agendas marcando o combobox DI ou se o nome do turno contiver as palavras-chave abaixo.\\nPalavras-chave (uma por linha):</p>
                     <textarea id="agdi-txt" style="width:100%;height:150px;padding:8px;border:1px solid #ddd;font-family:monospace;"></textarea>
                     <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:15px;">
                         <button id="agdi-cancel" style="padding:8px 15px;background:#eee;border:none;border-radius:4px;cursor:pointer;">Cancelar</button>
@@ -103,7 +104,7 @@
 
             m.querySelector('#agdi-cancel').onclick = () => m.style.display = 'none';
             m.querySelector('#agdi-save').onclick = () => {
-                const v = m.querySelector('#agdi-txt').value.split('\n').map(x=>x.trim()).filter(x=>x);
+                const v = m.querySelector('#agdi-txt').value.split('\\n').map(x=>x.trim()).filter(x=>x);
                 if(v.length){
                     PALAVRAS = v;
                     saveConfig(v);
@@ -115,7 +116,7 @@
                 }
             };
         }
-        m.querySelector('#agdi-txt').value = PALAVRAS.join('\n');
+        m.querySelector('#agdi-txt').value = PALAVRAS.join('\\n');
         m.style.display = 'flex';
     }
 
