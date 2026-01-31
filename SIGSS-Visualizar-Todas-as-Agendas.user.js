@@ -6,8 +6,8 @@
 // @author       Renato Krebs Rosa
 // @match        *://*.cloudmv.com.br/sigss/atendimentoConsultaAgenda*
 // @match        *://*.cloudmv.com.br/sigss/atendimentoOdontoAgenda*
-// @updateURL    https://raw.githubusercontent.com/ShadyBS/UserScripts/main/SIGSS-Visualizar-Todas-as-Agendas.user.js
-// @downloadURL  https://raw.githubusercontent.com/ShadyBS/UserScripts/main/SIGSS-Visualizar-Todas-as-Agendas.user.js
+// @updateURL    https://raw.githubusercontent.com/RenatoKR/UserScripts/main/SIGSS-Visualizar-Todas-as-Agendas.user.js
+// @downloadURL  https://raw.githubusercontent.com/RenatoKR/UserScripts/main/SIGSS-Visualizar-Todas-as-Agendas.user.js
 // @grant        none
 // ==/UserScript==
 
