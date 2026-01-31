@@ -3,9 +3,11 @@
 // @namespace    http://tampermonkey.net/
 // @version      24.0
 // @description  Correção de layout no Odonto (botões empilhados 100% width)
-// @author       Perplexity
+// @author       Renato Krebs Rosa
 // @match        *://*.cloudmv.com.br/sigss/atendimentoConsultaAgenda*
 // @match        *://*.cloudmv.com.br/sigss/atendimentoOdontoAgenda*
+// @updateURL    https://raw.githubusercontent.com/ShadyBS/UserScripts/main/SIGSS-Visualizar-Todas-as-Agendas.user.js
+// @downloadURL  https://raw.githubusercontent.com/ShadyBS/UserScripts/main/SIGSS-Visualizar-Todas-as-Agendas.user.js
 // @grant        none
 // ==/UserScript==
 
