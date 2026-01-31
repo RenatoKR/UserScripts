@@ -1,673 +1,224 @@
 // ==UserScript==
-// @name         SIGSS Diferenciador AG／DI - Automático
+// @name         SIGSS Diferenciador AG／DI - Automático (Multi-Context) FIX
 // @namespace    http://tampermonkey.net/
-// @version      16.1
-// @description  Diferencia agendamentos (AG) de demanda imediata (DI) automaticamente
+// @version      18.1
+// @description  Diferencia agendamentos (AG) de demanda imediata (DI) usando sempre a URL de Consulta
 // @match        *://*/sigss/atendimentoConsultaAgenda*
 // @match        *://*/sigss/atendimentoOdontoAgenda*
 // @grant        none
-// @updateURL    https://raw.githubusercontent.com/ShadyBS/UserScripts/main/sigss-diferenciador-ag-di.user.js
-// @downloadURL  https://raw.githubusercontent.com/ShadyBS/UserScripts/main/sigss-diferenciador-ag-di.user.js
-// @supportURL   https://github.com/ShadyBS/UserScripts/issues
 // ==/UserScript==
 
 (function() {
     'use strict';
 
-    // ========== CONFIGURAÇÃO DE DEBUG ==========
     const DEBUG = true;
+    function log(...args) { if (DEBUG) console.log('[AG/DI]', ...args); }
 
-    function log(...args) {
-        if (DEBUG) console.log('[AG/DI]', ...args);
-    }
+    // ========== ESTILOS ==========
+    const STYLES = `
+        .btn-sigss-compact {
+            padding: 6px 12px; border: 1px solid transparent; border-radius: 4px;
+            cursor: pointer; font-size: 11px; font-weight: bold; color: white;
+            display: inline-flex; align-items: center; gap: 4px; height: 30px;
+            transition: background 0.2s; text-transform: uppercase; font-family: sans-serif;
+            text-decoration: none; margin-left: 5px;
+        }
+        .btn-agdi { background-color: #FF9800; border-color: #F57C00; }
+        .btn-agdi:hover { background-color: #FB8C00; }
 
-    function logError(...args) {
-        console.error('[AG/DI ERROR]', ...args);
-    }
-    // ===========================================
+        .btn-agdi-odonto {
+            height: 35px;
+            margin-top: 5px;
+            vertical-align: middle;
+        }
 
-    // ========== GERENCIAMENTO DE CONFIGURAÇÕES ==========
+        #agdi-config-modal {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background-color: rgba(0,0,0,0.5); z-index: 10001; display: none;
+            justify-content: center; align-items: center; font-family: sans-serif;
+        }
+    `;
+
+    // ========== CONFIG ==========
     const CONFIG_KEY = 'agdi_palavras_chave';
-    const DEFAULT_PALAVRAS = [
-        'SEM AGENDAMENTO'
-    ];
+    const DEFAULT_PALAVRAS = ['SEM AGENDAMENTO'];
+    function loadConfig() { try { const s = localStorage.getItem(CONFIG_KEY); return s ? JSON.parse(s) : DEFAULT_PALAVRAS; } catch(e){ return DEFAULT_PALAVRAS; } }
+    function saveConfig(p) { localStorage.setItem(CONFIG_KEY, JSON.stringify(p)); }
+    let PALAVRAS = loadConfig();
 
-    function carregarPalavrasChave() {
-        try {
-            const saved = localStorage.getItem(CONFIG_KEY);
-            if (saved) {
-                const palavras = JSON.parse(saved);
-                log('📋 Palavras-chave carregadas:', palavras);
-                return palavras;
-            }
-        } catch (e) {
-            logError('Erro ao carregar palavras-chave:', e);
-        }
-        log('📋 Usando palavras-chave padrão');
-        return DEFAULT_PALAVRAS;
+    // ========== URL FIXA DE CONSULTA ==========
+    // Sempre usar o mesmo endpoint, mesmo estando na tela de Odonto:
+    //   *host*/sigss/atendimentoConsultaAgenda/getInfoRegistro
+    function getConsultaBaseUrl() {
+        const url = new URL(window.location.href);
+        return `${url.origin}/sigss/atendimentoConsultaAgenda`;
     }
 
-    function salvarPalavrasChave(palavras) {
-        try {
-            localStorage.setItem(CONFIG_KEY, JSON.stringify(palavras));
-            log('💾 Palavras-chave salvas:', palavras);
-            return true;
-        } catch (e) {
-            logError('Erro ao salvar palavras-chave:', e);
-            return false;
+    // ========== UI ENGINE ==========
+    function injectStyles() {
+        if (!document.getElementById('style-agdi')) {
+            const s = document.createElement('style'); s.id = 'style-agdi'; s.textContent = STYLES;
+            document.head.appendChild(s);
         }
     }
 
-    let PALAVRAS_CHAVE_DI = carregarPalavrasChave();
-    // ====================================================
+    function createButton() {
+        if (document.getElementById('agdi-config-btn')) return;
 
-    // ========== INTERFACE DE CONFIGURAÇÃO ==========
-    function criarBotaoConfig() {
-        // Verificar se já existe
-        if (document.getElementById('agdi-config-btn')) {
-            log('⚠️ Botão de configuração já existe');
+        // Odonto
+        const fieldsetOdonto = document.querySelector('fieldset.sigss-container legend.sigss-font--large');
+        if (fieldsetOdonto) {
+            log('🦷 Detectado modo Odonto');
+            const container = fieldsetOdonto.parentElement;
+
+            const btn = document.createElement('button');
+            btn.id = 'agdi-config-btn';
+            btn.className = 'btn-sigss-compact btn-agdi btn-agdi-odonto';
+            btn.innerHTML = '<i class="ui-icon ui-icon-gear" style="display:inline-block;margin-right:4px;"></i> Config AG/DI';
+            btn.type = 'button';
+            btn.onclick = (e) => { e.preventDefault(); openModal(); };
+
+            container.appendChild(btn);
             return;
         }
 
-        log('🔧 Criando botão de configuração...');
+        // Consulta
+        const inputNome = document.getElementById('usuarioServicoNome');
+        if (inputNome) {
+            log('📋 Detectado modo Consulta');
+            const row = inputNome.parentElement.parentElement;
 
-        const botao = document.createElement('button');
-        botao.id = 'agdi-config-btn';
-        botao.innerHTML = '⚙️ AG/DI';
-        botao.title = 'Configurar palavras-chave DI';
-        botao.style.cssText = `
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            z-index: 10000;
-            padding: 10px 15px;
-            background-color: #2196F3;
-            color: white;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-            font-weight: bold;
-            font-size: 14px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.3);
-            transition: background-color 0.3s;
-        `;
+            const btn = document.createElement('button');
+            btn.id = 'agdi-config-btn';
+            btn.className = 'btn-sigss-compact btn-agdi';
+            btn.innerHTML = '⚙️ AG/DI';
+            btn.type = 'button';
+            btn.onclick = (e) => { e.preventDefault(); openModal(); };
 
-        botao.addEventListener('mouseenter', () => {
-            botao.style.backgroundColor = '#1976D2';
-        });
-
-        botao.addEventListener('mouseleave', () => {
-            botao.style.backgroundColor = '#2196F3';
-        });
-
-        botao.addEventListener('click', abrirModalConfig);
-
-        document.body.appendChild(botao);
-        log('✅ Botão de configuração adicionado');
-    }
-
-    function abrirModalConfig() {
-        log('🔧 Abrindo modal de configuração...');
-
-        // Remover modal existente se houver
-        const modalExistente = document.getElementById('agdi-config-modal');
-        if (modalExistente) {
-            modalExistente.remove();
-        }
-
-        const modal = document.createElement('div');
-        modal.id = 'agdi-config-modal';
-        modal.style.cssText = `
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background-color: rgba(0,0,0,0.5);
-            z-index: 10001;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-        `;
-
-        const conteudo = document.createElement('div');
-        conteudo.style.cssText = `
-            background-color: white;
-            padding: 25px;
-            border-radius: 8px;
-            width: 500px;
-            max-width: 90%;
-            max-height: 80vh;
-            overflow-y: auto;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-        `;
-
-        const titulo = document.createElement('h2');
-        titulo.textContent = '⚙️ Configuração AG/DI';
-        titulo.style.cssText = `
-            margin: 0 0 15px 0;
-            color: #333;
-            font-size: 20px;
-        `;
-
-        const descricao = document.createElement('p');
-        descricao.textContent = 'Palavras-chave que identificam Demanda Imediata (DI). Digite uma por linha:';
-        descricao.style.cssText = `
-            margin: 0 0 15px 0;
-            color: #666;
-            font-size: 14px;
-        `;
-
-        const textarea = document.createElement('textarea');
-        textarea.id = 'agdi-keywords-input';
-        textarea.value = PALAVRAS_CHAVE_DI.join('\n');
-        textarea.style.cssText = `
-            width: 100%;
-            height: 200px;
-            padding: 10px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            font-family: monospace;
-            font-size: 14px;
-            resize: vertical;
-            box-sizing: border-box;
-        `;
-
-        const aviso = document.createElement('p');
-        aviso.innerHTML = '<strong>Nota:</strong> Não diferencia maiúsculas/minúsculas. Cada linha é uma palavra-chave.';
-        aviso.style.cssText = `
-            margin: 10px 0;
-            color: #666;
-            font-size: 12px;
-            font-style: italic;
-        `;
-
-        const botoes = document.createElement('div');
-        botoes.style.cssText = `
-            display: flex;
-            gap: 10px;
-            margin-top: 20px;
-            justify-content: flex-end;
-        `;
-
-        const btnSalvar = document.createElement('button');
-        btnSalvar.textContent = '💾 Salvar';
-        btnSalvar.style.cssText = `
-            padding: 10px 20px;
-            background-color: #4CAF50;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-weight: bold;
-            font-size: 14px;
-        `;
-
-        const btnRestaurar = document.createElement('button');
-        btnRestaurar.textContent = '🔄 Restaurar Padrão';
-        btnRestaurar.style.cssText = `
-            padding: 10px 20px;
-            background-color: #FF9800;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-weight: bold;
-            font-size: 14px;
-        `;
-
-        const btnCancelar = document.createElement('button');
-        btnCancelar.textContent = '❌ Cancelar';
-        btnCancelar.style.cssText = `
-            padding: 10px 20px;
-            background-color: #f44336;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-weight: bold;
-            font-size: 14px;
-        `;
-
-        btnSalvar.addEventListener('click', () => {
-            const texto = textarea.value;
-            const palavras = texto
-                .split('\n')
-                .map(p => p.trim())
-                .filter(p => p.length > 0);
-
-            if (palavras.length === 0) {
-                alert('❌ Adicione pelo menos uma palavra-chave!');
-                return;
-            }
-
-            PALAVRAS_CHAVE_DI = palavras;
-            if (salvarPalavrasChave(palavras)) {
-                alert('✅ Configurações salvas! Recarregue a página para aplicar.');
-                modal.remove();
+            if (getComputedStyle(row).display !== 'flex') {
+                row.style.display = 'flex'; row.style.alignItems = 'flex-end';
             } else {
-                alert('❌ Erro ao salvar configurações!');
+                row.style.alignItems = 'flex-end';
             }
-        });
 
-        btnRestaurar.addEventListener('click', () => {
-            if (confirm('Restaurar palavras-chave padrão?')) {
-                textarea.value = DEFAULT_PALAVRAS.join('\n');
-            }
-        });
-
-        btnCancelar.addEventListener('click', () => {
-            modal.remove();
-        });
-
-        // Fechar ao clicar fora
-        modal.addEventListener('click', (e) => {
-            if (e.target === modal) {
-                modal.remove();
-            }
-        });
-
-        botoes.appendChild(btnRestaurar);
-        botoes.appendChild(btnCancelar);
-        botoes.appendChild(btnSalvar);
-
-        conteudo.appendChild(titulo);
-        conteudo.appendChild(descricao);
-        conteudo.appendChild(textarea);
-        conteudo.appendChild(aviso);
-        conteudo.appendChild(botoes);
-
-        modal.appendChild(conteudo);
-        document.body.appendChild(modal);
-
-        // Focar no textarea
-        textarea.focus();
-        textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-
-        log('✅ Modal de configuração aberto');
-    }
-    // ==============================================
-
-    log('🚀 Script carregado - modo automático');
-
-    // Mapa para armazenar tipo por agcoPK
-    const tipoPorAgendamento = new Map();
-    let processandoLinhas = false;
-
-    function ehDemandaImediata(dto) {
-        if (!dto.infoNomeTurno) {
-            log('      → Sem infoNomeTurno = DI');
-            return true;
+            row.appendChild(btn);
         }
-
-        const nomeTurnoUpper = dto.infoNomeTurno.toUpperCase();
-
-        for (const palavra of PALAVRAS_CHAVE_DI) {
-            if (nomeTurnoUpper.includes(palavra.toUpperCase())) {
-                log(`      → Palavra-chave "${palavra}" encontrada em "${dto.infoNomeTurno}" = DI`);
-                return true;
-            }
-        }
-
-        log(`      → infoNomeTurno="${dto.infoNomeTurno}" sem palavras-chave = AG`);
-        return false;
     }
 
-    function buscarInfoTurno(agcoPK) {
-        log(`📡 Iniciando busca para ${agcoPK}`);
-
-        return new Promise((resolve, reject) => {
-            const [idp, ids] = agcoPK.split('-');
-
-            const xhr = new XMLHttpRequest();
-            const url = `atendimentoConsultaAgenda/getInfoRegistro?agcoPK.idp=${idp}&agcoPK.ids=${ids}`;
-            log(`   URL: ${url}`);
-
-            xhr.open('GET', url, true);
-
-            xhr.onload = function() {
-                log(`   ✅ Resposta recebida (${xhr.status}) para ${agcoPK}`);
-
-                if (xhr.status === 200) {
-                    try {
-                        const response = JSON.parse(xhr.responseText);
-                        log(`   📦 JSON parseado:`, response);
-
-                        const dto = response.atendimentoConsultaInfoDialogDTO;
-
-                        if (dto) {
-                            const isDI = ehDemandaImediata(dto);
-                            const tipo = isDI ? 'DI' : 'AG';
-                            const nomeTurno = dto.infoNomeTurno || 'DEMANDA IMEDIATA';
-
-                            const info = {
-                                tipo: tipo,
-                                nomeTurno: nomeTurno
-                            };
-
-                            tipoPorAgendamento.set(agcoPK, info);
-                            log(`   ✅ ${tipo} identificado - ${agcoPK}: ${nomeTurno}`);
-                            resolve(info);
-                        } else {
-                            logError(`   ❌ Sem DTO na resposta para ${agcoPK}`);
-                            reject('Sem DTO na resposta');
-                        }
-                    } catch (e) {
-                        logError(`   ❌ Erro ao parsear JSON:`, e);
-                        reject(e);
-                    }
-                } else {
-                    logError(`   ❌ Status ${xhr.status} para ${agcoPK}`);
-                    reject('Erro na requisição: ' + xhr.status);
+    function openModal() {
+        let m = document.getElementById('agdi-config-modal');
+        if (!m) {
+            m = document.createElement('div'); m.id = 'agdi-config-modal';
+            m.innerHTML = `
+                <div style="background:white;padding:25px;border-radius:8px;width:500px;box-shadow:0 4px 15px rgba(0,0,0,0.3);">
+                    <h2 style="margin:0 0 15px 0;color:#333;">⚙️ Configuração AG/DI</h2>
+                    <p style="margin-bottom:10px;color:#666;">Palavras-chave (uma por linha):</p>
+                    <textarea id="agdi-txt" style="width:100%;height:150px;padding:8px;border:1px solid #ddd;"></textarea>
+                    <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:15px;">
+                        <button id="agdi-cancel" style="padding:8px 15px;background:#eee;border:none;border-radius:4px;cursor:pointer;">Cancelar</button>
+                        <button id="agdi-save" style="padding:8px 15px;background:#2196F3;color:white;border:none;border-radius:4px;cursor:pointer;">Salvar</button>
+                    </div>
+                </div>`;
+            document.body.appendChild(m);
+            m.querySelector('#agdi-cancel').onclick = () => m.style.display = 'none';
+            m.querySelector('#agdi-save').onclick = () => {
+                const v = m.querySelector('#agdi-txt').value.split('\n').map(x=>x.trim()).filter(x=>x);
+                if(v.length){
+                    PALAVRAS=v; saveConfig(v); m.style.display='none';
+                    document.querySelectorAll('.indicador-agendamento').forEach(e=>e.remove());
+                    mapCache.clear(); runCheck();
                 }
             };
+        }
+        m.querySelector('#agdi-txt').value = PALAVRAS.join('\n');
+        m.style.display = 'flex';
+    }
 
-            xhr.onerror = function() {
-                logError(`   ❌ Erro de rede para ${agcoPK}`);
-                reject('Erro de rede');
+    // ========== LOGIC ==========
+    const mapCache = new Map();
+    let isRunning = false;
+
+    function isDI(dto) {
+        if (!dto.infoNomeTurno) return true;
+        const n = dto.infoNomeTurno.toUpperCase();
+        return PALAVRAS.some(p => n.includes(p.toUpperCase()));
+    }
+
+    function fetchInfo(pk) {
+        return new Promise((ok, fail) => {
+            const [idp, ids] = pk.split('-');
+            const xhr = new XMLHttpRequest();
+
+            const baseUrl = getConsultaBaseUrl();
+            const url = `${baseUrl}/getInfoRegistro?agcoPK.idp=${idp}&agcoPK.ids=${ids}`;
+            log('XHR URL:', url);
+
+            xhr.open('GET', url, true);
+            xhr.onload = () => {
+                if (xhr.status === 200) {
+                    try {
+                        const r = JSON.parse(xhr.responseText);
+                        const dto = r.atendimentoConsultaInfoDialogDTO || r.atendimentoOdontoInfoDialogDTO || r;
+                        const nomeTurno = dto.infoNomeTurno || dto.nomeTurno || 'Turno Desconhecido';
+                        const di = isDI(dto);
+                        const info = { type: di ? 'DI' : 'AG', label: di ? 'Demanda Imediata' : `Agendado: ${nomeTurno}` };
+                        mapCache.set(pk, info);
+                        ok(info);
+                    } catch (e) { fail(e); }
+                } else {
+                    log('XHR status != 200:', xhr.status);
+                    fail(xhr.status);
+                }
             };
-
+            xhr.onerror = () => fail('network');
             xhr.send();
         });
     }
 
-    function adicionarIndicadores() {
-        if (processandoLinhas) {
-            log('⏸️ Já processando linhas, pulando...');
-            return;
-        }
-
-        log('▶️ Iniciando adicionarIndicadores()');
-        processandoLinhas = true;
-
+    function runCheck() {
+        if (isRunning) return; isRunning = true;
         try {
-            const possiveisGrids = [
-                '#gridatendimento',
-                '#grid_busca',
-                'table.ui-jqgrid-btable',
-                '[id*="grid"]'
-            ];
+            document.querySelectorAll('tr[id]').forEach(tr => {
+                const pid = tr.id;
+                if (!pid || !pid.includes('-')) return;
 
-            let grid = null;
-            let seletorUsado = null;
+                const cell = tr.querySelector('td[aria-describedby*="entiNome"], td[aria-describedby*="usuarioServicoNome"], td[aria-describedby*="Nome"], td[aria-describedby*="paciente"]');
+                if (!cell || cell.querySelector('.indicador-agendamento')) return;
 
-            for (const seletor of possiveisGrids) {
-                grid = document.querySelector(seletor);
-                if (grid) {
-                    seletorUsado = seletor;
-                    break;
+                if (mapCache.has(pid)) {
+                    draw(cell, mapCache.get(pid));
+                } else {
+                    fetchInfo(pid).then(i => {
+                        const c = document.getElementById(pid)?.querySelector('td[aria-describedby*="entiNome"], td[aria-describedby*="usuarioServicoNome"], td[aria-describedby*="Nome"], td[aria-describedby*="paciente"]');
+                        if (c) draw(c, i);
+                    }).catch(()=>{});
                 }
-            }
-
-            if (!grid) {
-                log('❌ Grid não encontrada! Seletores testados:', possiveisGrids);
-                log('   Elementos com "grid" no ID:', document.querySelectorAll('[id*="grid"]'));
-                processandoLinhas = false;
-                return;
-            }
-
-            log(`✅ Grid encontrada com seletor: ${seletorUsado}`);
-            log('   ID da grid:', grid.id);
-
-            const possiveisLinhas = [
-                '.ui-widget-content',
-                'tbody tr:not(.jqgfirstrow)',
-                'tr[id]',
-                'tr'
-            ];
-
-            let linhas = null;
-            let seletorLinhasUsado = null;
-
-            for (const seletor of possiveisLinhas) {
-                linhas = grid.querySelectorAll(seletor);
-                if (linhas.length > 0) {
-                    seletorLinhasUsado = seletor;
-                    break;
-                }
-            }
-
-            if (!linhas || linhas.length === 0) {
-                log('❌ Nenhuma linha encontrada! Seletores testados:', possiveisLinhas);
-                log('   HTML da grid (primeiros 500 chars):', grid.innerHTML.substring(0, 500));
-                processandoLinhas = false;
-                return;
-            }
-
-            log(`✅ ${linhas.length} linhas encontradas com seletor: ${seletorLinhasUsado}`);
-
-            let ag = 0;
-            let di = 0;
-            let pendentes = 0;
-            let semId = 0;
-
-            linhas.forEach(function(linha, index) {
-                const rowId = linha.getAttribute('id');
-
-                if (!rowId) {
-                    semId++;
-                    log(`   ⚠️ Linha ${index} sem ID`);
-                    return;
-                }
-
-                log(`   🔍 Processando linha ${index}: ID=${rowId}`);
-
-                const possiveisCelulas = [
-                    'td[aria-describedby="gridatendimento_entiNome"]',
-                    'td[aria-describedby*="entiNome"]',
-                    'td[aria-describedby*="Nome"]',
-                    'td[aria-describedby*="nome"]'
-                ];
-
-                let celulaNome = null;
-                let seletorCelulaUsado = null;
-
-                for (const seletor of possiveisCelulas) {
-                    celulaNome = linha.querySelector(seletor);
-                    if (celulaNome) {
-                        seletorCelulaUsado = seletor;
-                        break;
-                    }
-                }
-
-                if (!celulaNome) {
-                    log(`      ❌ Célula do nome não encontrada para linha ${rowId}`);
-                    log(`         Células disponíveis:`, Array.from(linha.querySelectorAll('td')).map(td => td.getAttribute('aria-describedby')));
-                    return;
-                }
-
-                log(`      ✅ Célula do nome encontrada com: ${seletorCelulaUsado}`);
-
-                const indicadorExistente = celulaNome.querySelector('.indicador-agendamento');
-                if (indicadorExistente) {
-                    const texto = indicadorExistente.textContent.trim();
-                    log(`      ℹ️ Indicador já existe: ${texto}`);
-                    if (texto === 'AG') ag++;
-                    else if (texto === 'DI') di++;
-                    return;
-                }
-
-                const infoTipo = tipoPorAgendamento.get(rowId);
-
-                if (!infoTipo) {
-                    pendentes++;
-                    log(`      📡 Sem informação em cache, buscando...`);
-
-                    buscarInfoTurno(rowId).then(() => {
-                        log(`      ✅ Informação obtida, adicionando indicador`);
-                        setTimeout(() => adicionarIndicadorNaLinha(linha, rowId), 50);
-                    }).catch(err => {
-                        logError(`      ❌ Erro ao buscar info de ${rowId}:`, err);
-                    });
-                    return;
-                }
-
-                log(`      ✅ Informação em cache: ${infoTipo.tipo}`);
-                adicionarIndicadorNaLinha(linha, rowId);
-                infoTipo.tipo === 'AG' ? ag++ : di++;
             });
-
-            log(`📊 Resumo: ${ag} AG | ${di} DI | ${pendentes} pendentes | ${semId} sem ID`);
-
-        } catch (e) {
-            logError('❌ Erro em adicionarIndicadores:', e);
-            logError('   Stack:', e.stack);
-        } finally {
-            processandoLinhas = false;
-        }
+        } finally { isRunning = false; }
     }
 
-    function adicionarIndicadorNaLinha(linha, rowId) {
-        log(`   🎨 Adicionando indicador na linha ${rowId}`);
-
-        const infoTipo = tipoPorAgendamento.get(rowId);
-        if (!infoTipo) {
-            log(`      ❌ Sem informação no cache para ${rowId}`);
-            return;
-        }
-
-        const possiveisCelulas = [
-            'td[aria-describedby="gridatendimento_entiNome"]',
-            'td[aria-describedby*="entiNome"]',
-            'td[aria-describedby*="Nome"]',
-            'td[aria-describedby*="nome"]'
-        ];
-
-        let celulaNome = null;
-
-        for (const seletor of possiveisCelulas) {
-            celulaNome = linha.querySelector(seletor);
-            if (celulaNome) break;
-        }
-
-        if (!celulaNome) {
-            log(`      ❌ Célula do nome não encontrada`);
-            return;
-        }
-
-        if (celulaNome.querySelector('.indicador-agendamento')) {
-            log(`      ⚠️ Indicador já existe, pulando`);
-            return;
-        }
-
-        const indicador = infoTipo.tipo;
-        const corFundo = infoTipo.tipo === 'AG' ? '#4CAF50' : '#FFA500';
-        const titulo = infoTipo.tipo === 'AG'
-            ? `Consulta Agendada - ${infoTipo.nomeTurno}`
-            : 'Demanda Imediata';
-
-        log(`      ✅ Criando badge ${indicador} (${corFundo})`);
-
-        const spanIndicador = document.createElement('span');
-        spanIndicador.className = 'indicador-agendamento';
-        spanIndicador.textContent = indicador;
-        spanIndicador.title = titulo;
-        spanIndicador.style.cssText = `
-            float: right;
-            margin-left: 10px;
-            padding: 2px 6px;
-            background-color: ${corFundo};
-            color: white;
-            border-radius: 3px;
-            font-weight: bold;
-            font-size: 11px;
-            cursor: help;
-        `;
-
-        const divNome = celulaNome.querySelector('div.layout-row');
-        if (divNome) {
-            log(`      ✅ Adicionando em div.layout-row`);
-            divNome.appendChild(spanIndicador);
-        } else {
-            log(`      ✅ Adicionando direto na célula`);
-            celulaNome.appendChild(spanIndicador);
-        }
-
-        log(`      🎉 Indicador ${indicador} adicionado com sucesso!`);
+    function draw(cell, info) {
+        if (cell.querySelector('.indicador-agendamento')) return;
+        const s = document.createElement('span');
+        s.className = 'indicador-agendamento';
+        s.textContent = info.type;
+        s.title = info.label;
+        s.style.cssText = `float:right;margin-left:5px;padding:1px 5px;background:${info.type==='AG'?'#4CAF50':'#FF9800'};color:white;border-radius:3px;font-size:10px;font-weight:bold;cursor:help;`;
+        (cell.querySelector('.layout-row')||cell).appendChild(s);
     }
 
-    const observer = new MutationObserver((mutations) => {
-        log('👁️ Observer detectou mudanças');
-        let precisaProcessar = false;
+    // ========== BOOT ==========
+    injectStyles();
+    const mo = new MutationObserver(runCheck);
 
-        mutations.forEach((mutation) => {
-            if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
-                mutation.addedNodes.forEach((node) => {
-                    if (node.nodeType === 1 && (node.tagName === 'TR' || node.querySelector('tr'))) {
-                        log('   ✅ Nova linha (TR) detectada');
-                        precisaProcessar = true;
-                    }
-                });
-            }
-        });
-
-        if (precisaProcessar) {
-            log('   🔄 Agendando processamento...');
-            setTimeout(adicionarIndicadores, 200);
+    setInterval(() => {
+        createButton();
+        const g = document.querySelector('#grid_busca') || document.querySelector('table.ui-jqgrid-btable');
+        if (g && !g.hasAttribute('d-obs')) {
+            g.setAttribute('d-obs', '1');
+            mo.observe(g.parentElement, { childList: true, subtree: true });
+            runCheck();
         }
-    });
+    }, 1000);
 
-    let tentativas = 0;
-    const maxTentativas = 20;
-
-    const aguardarGrid = setInterval(() => {
-        tentativas++;
-        log(`🔍 Tentativa ${tentativas}/${maxTentativas} de encontrar grid...`);
-
-        const possiveisGrids = [
-            '#gridatendimento',
-            '#grid_busca',
-            'table.ui-jqgrid-btable'
-        ];
-
-        let grid = null;
-        let seletorUsado = null;
-
-        for (const seletor of possiveisGrids) {
-            grid = document.querySelector(seletor);
-            if (grid) {
-                seletorUsado = seletor;
-                break;
-            }
-        }
-
-        if (grid) {
-            clearInterval(aguardarGrid);
-            log(`✅ Grid encontrada após ${tentativas} tentativas (${seletorUsado})`);
-
-            observer.observe(grid.parentElement || grid, {
-                childList: true,
-                subtree: true
-            });
-
-            log('✅ Observer instalado');
-
-            // Processar linhas existentes
-            setTimeout(adicionarIndicadores, 500);
-        } else if (tentativas >= maxTentativas) {
-            clearInterval(aguardarGrid);
-            logError(`❌ Grid não encontrada após ${maxTentativas} tentativas`);
-            log('   IDs disponíveis:', Array.from(document.querySelectorAll('[id]')).map(el => el.id));
-        }
-    }, 500);
-
-    // ========== ADICIONAR BOTÃO APÓS DOM CARREGAR ==========
-    function tentarAdicionarBotao() {
-        if (document.body) {
-            criarBotaoConfig();
-        } else {
-            log('⏳ Aguardando document.body...');
-            setTimeout(tentarAdicionarBotao, 100);
-        }
-    }
-
-    // Iniciar tentativa de adicionar botão
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', tentarAdicionarBotao);
-    } else {
-        tentarAdicionarBotao();
-    }
-    // ========================================================
-
-    log('✅ Script instalado - aguardando grid...');
 })();
