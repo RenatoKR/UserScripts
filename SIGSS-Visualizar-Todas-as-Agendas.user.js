@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         SIGSS - Visualizar Todas as Agendas V28.4 (Fix Indicador)
+// @name         SIGSS - Visualizar Todas as Agendas V28.5 (Fix NullPointer)
 // @namespace    http://tampermonkey.net/
-// @version      28.4
-// @description  Indicador de frequência atualiza em tempo real
+// @version      28.5
+// @description  Fix para NullPointerException ao trocar agenda
 // @author       Renato Krebs Rosa
 // @match        *://*/sigss/atendimentoConsultaAgenda*
 // @match        *://*/sigss/atendimentoOdontoAgenda*
@@ -198,13 +198,20 @@
         const $ = window.jQuery;
         const $grid = $('#grid_busca');
         $('head').append(`<style>${STYLES}</style>`);
+
         originalGridConfig.datatype = $grid.jqGrid('getGridParam', 'datatype');
         originalGridConfig.url = $grid.jqGrid('getGridParam', 'url');
-        originalGridConfig.postData = $.extend(true, {}, $grid.jqGrid('getGridParam', 'postData'));
-        injectUI($); createModalHTML($); createFreqModal($);
+        // ★ SOLUÇÃO 3: Resolver funções imediatamente ao salvar
+        originalGridConfig.postData = resolveGridParams($, $grid);
+
+        injectUI($); 
+        createModalHTML($); 
+        createFreqModal($);
+
         const $profSelect = getProfSelect($);
         if ($profSelect.length) $profSelect.on('change', () => { stopAutoRefresh(true); restoreGrid($); updateBadge($); });
         $('#botao_pesquisar, button[onclick*="pesquisar"]').on('click', () => { stopAutoRefresh(true); restoreGrid($); });
+
         log('✅ Script inicializado');
     }
 
@@ -329,7 +336,7 @@
                 stopAutoRefresh(false);
                 startAutoRefresh($);
                 updateStatusBar();
-                updateFreqIndicator(); // ← ATUALIZA O INDICADOR!
+                updateFreqIndicator();
             }
         });
     }
@@ -355,7 +362,7 @@
             let u = $grid.jqGrid('getGridParam','url');
             if(!originalGridConfig.url && u) {
                 originalGridConfig.url=u;
-                originalGridConfig.postData=$.extend(true,{},$grid.jqGrid('getGridParam','postData'));
+                originalGridConfig.postData=resolveGridParams($, $grid);
             }
             if(!originalGridConfig.url) return alert('Erro URL grid.');
 
@@ -632,21 +639,52 @@
         });
     }
 
+    // ★ SOLUÇÃO 1: restoreGrid melhorado
     function restoreGrid($) {
         const $g = $('#grid_busca');
+
+        // Para completamente qualquer operação em andamento
+        stopAutoRefresh(true);
+
+        // Limpa dados locais primeiro
         if ($g.jqGrid('getGridParam','datatype') === 'local') {
-            stopAutoRefresh(true);
-            $g.jqGrid('setGridParam', {
-                datatype: originalGridConfig.datatype || 'json',
-                url: originalGridConfig.url,
-                postData: $.extend(true, {}, originalGridConfig.postData),
-                data: []
-            }).trigger('reloadGrid');
+            $g.jqGrid('clearGridData', true);
         }
+
+        // Restaura configuração original com postData resolvido
+        $g.jqGrid('setGridParam', {
+            datatype: originalGridConfig.datatype || 'json',
+            url: originalGridConfig.url,
+            postData: $.extend(true, {}, originalGridConfig.postData),
+            data: [],
+            rowNum: 15
+        });
+
+        // Força reset do estado interno
+        isMultiViewActive = false;
+        savedBaseParams = null;
+        currentTargets = [];
+        lastUpdate = null;
+        isPaused = false;
+
+        log('✅ Grid restaurado ao estado original');
     }
 
     function patchGrid($g) { const h=$g.jqGrid('getGridParam','afterInsertRow'); if(h&&!h.isPatched){ const n=function(){try{return h.apply(this,arguments);}catch(e){}}; n.isPatched=true; $g.jqGrid('setGridParam',{afterInsertRow:n}); } }
-    function resolveGridParams($,g){ const r={}; const raw=g.jqGrid('getGridParam','postData'); $.each(raw,(k,v)=>{try{r[k]=typeof v==='function'?v():v;}catch(e){r[k]='';}}); return r; }
+
+    function resolveGridParams($,g){ 
+        const r={}; 
+        const raw=g.jqGrid('getGridParam','postData'); 
+        $.each(raw,(k,v)=>{
+            try{
+                r[k]=typeof v==='function'?v():v;
+            }catch(e){
+                r[k]='';
+            }
+        }); 
+        return r; 
+    }
+
     function get(p,k){ let r=''; Object.keys(p).forEach(key=>{if(String(p[key]).startsWith(k+':'))r=String(p[key]).split(':')[1];}); return r; }
     function getCurrentDate(){ const d=new Date(); return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`; }
     function showUI(s,t){ $('#sigss-loader').remove(); if(s) $('body').append(`<div id="sigss-loader" style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);z-index:9999;display:flex;justify-content:center;align-items:center;flex-direction:column;color:white;"><h2>Carregando...</h2><div id="sigss-msg">...</div></div>`); }
