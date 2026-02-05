@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SIGSS - Visualizar Todas as Agendas V28.5 (Fix NullPointer)
 // @namespace    http://tampermonkey.net/
-// @version      28.5
+// @version      28.6
 // @description  Fix para NullPointerException ao trocar agenda
 // @author       Renato Krebs Rosa
 // @match        *://*/sigss/atendimentoConsultaAgenda*
@@ -657,7 +657,7 @@
             url: originalGridConfig.url,
             postData: $.extend(true, {}, originalGridConfig.postData),
             data: [],
-            rowNum: 15
+            rowNum: 5000
         });
 
         // Força reset do estado interno
