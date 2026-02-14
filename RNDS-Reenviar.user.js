@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         SPRNDS - Reenviar Premium v11.10 DUAL REQUEST WAIT
+// @name         SPRNDS - Reenviar Premium v11.11 OVERLAY SUPPRESSOR
 // @namespace    http://tampermonkey.net/
-// @version      11.10
-// @description  Aguarda POST + GET antes de continuar + Auto paginação + Espera dinâmica
+// @version      11.11
+// @description  Suprime overlays ativos + Aguarda POST + GET + Auto paginação
 // @author       Voce
 // @match        *://*/rnds/vaccine-sync*
 // @grant        GM_notification
@@ -15,7 +15,7 @@
 (function() {
     'use strict';
 
-    console.log('🎯 SPRNDS v11.10 DUAL REQUEST WAIT carregado! 🚀🔄📡');
+    console.log('🎯 SPRNDS v11.11 OVERLAY SUPPRESSOR carregado! 🚀🔄📡🛡️');
 
     let processandoReenvio = false;
     let processosCancelados = false;
@@ -60,11 +60,153 @@
     let registrosPorPagina = 500;
     let ignorarHistoricoSucesso = false;
 
-    // 🆕 v11.10: Sistema de monitoramento de requisições
     let requisicoesAguardando = new Map();
     let contadorRequisicoesMonitoradas = 0;
 
-    // 🆕 FUNÇÃO: Instalar interceptor de requisições XHR
+    // 🆕 v11.11: Variáveis para supressor de overlay
+    let observerOverlay = null;
+    let intervaloSupressor = null;
+    let overlaysRemovidos = 0;
+
+    // 🆕 v11.11: FUNÇÃO: Instalar supressor ativo de overlays
+    function instalarSupressorOverlay() {
+        console.log('🛡️ Instalando supressor ativo de overlays...');
+
+        // Adiciona CSS customizado para forçar overlays invisíveis
+        const style = document.createElement('style');
+        style.id = 'sprnds-overlay-suppressor';
+        style.textContent = `
+            /* Força spinners e overlays invisíveis */
+            ngx-spinner,
+            .ngx-spinner-overlay,
+            [bdcolor],
+            .cdk-overlay-backdrop:not(.cdk-overlay-backdrop-showing),
+            .mat-drawer-backdrop {
+                display: none !important;
+                visibility: hidden !important;
+                opacity: 0 !important;
+                pointer-events: none !important;
+            }
+            
+            /* Permite apenas overlays de diálogos */
+            .cdk-overlay-backdrop.cdk-overlay-backdrop-showing {
+                /* Mantém visible apenas se for backdrop de diálogo real */
+            }
+        `;
+        document.head.appendChild(style);
+        console.log('  ✅ CSS supressor adicionado');
+
+        // MutationObserver para detectar novos overlays
+        observerOverlay = new MutationObserver(function(mutations) {
+            mutations.forEach(function(mutation) {
+                mutation.addedNodes.forEach(function(node) {
+                    if (node.nodeType === 1) { // Element node
+                        // Verifica se é spinner/overlay
+                        if (node.matches && (
+                            node.matches('ngx-spinner') ||
+                            node.matches('.ngx-spinner-overlay') ||
+                            node.matches('[bdcolor]') ||
+                            node.classList.contains('ngx-spinner-overlay')
+                        )) {
+                            node.style.display = 'none';
+                            node.style.visibility = 'hidden';
+                            node.style.opacity = '0';
+                            overlaysRemovidos++;
+                            console.log('🛡️ Overlay removido automaticamente (#' + overlaysRemovidos + ')');
+                        }
+
+                        // Verifica backdrop que não seja de diálogo
+                        if (node.matches && node.matches('.cdk-overlay-backdrop')) {
+                            const temDialogo = document.querySelector('.nab-dialog-container, mat-dialog-container');
+                            if (!temDialogo) {
+                                node.style.display = 'none';
+                                overlaysRemovidos++;
+                                console.log('🛡️ Backdrop removido (#' + overlaysRemovidos + ')');
+                            }
+                        }
+                    }
+                });
+            });
+        });
+
+        // Observa o body inteiro
+        observerOverlay.observe(document.body, {
+            childList: true,
+            subtree: true
+        });
+
+        console.log('  ✅ MutationObserver instalado');
+
+        // Supressor periódico (fallback)
+        intervaloSupressor = setInterval(function() {
+            if (processandoReenvio) {
+                forcarRemoverOverlays();
+            }
+        }, 500);
+
+        console.log('  ✅ Supressor periódico ativado (500ms)');
+        console.log('✅ Supressor de overlays instalado com sucesso!');
+    }
+
+    // 🆕 v11.11: FUNÇÃO: Força remoção de overlays
+    function forcarRemoverOverlays() {
+        let removidos = 0;
+
+        // Remove spinners
+        const spinners = document.querySelectorAll('ngx-spinner, .ngx-spinner-overlay, [bdcolor]');
+        spinners.forEach(function(spinner) {
+            if (spinner && spinner.style) {
+                spinner.style.display = 'none';
+                spinner.style.visibility = 'hidden';
+                spinner.style.opacity = '0';
+                spinner.style.pointerEvents = 'none';
+                removidos++;
+            }
+        });
+
+        // Remove overlays/backdrops (exceto de diálogos)
+        const temDialogo = document.querySelector('.nab-dialog-container, mat-dialog-container');
+        if (!temDialogo) {
+            const overlays = document.querySelectorAll('.cdk-overlay-backdrop, .mat-drawer-backdrop');
+            overlays.forEach(function(overlay) {
+                if (overlay && overlay.style) {
+                    overlay.style.display = 'none';
+                    overlay.style.pointerEvents = 'none';
+                    removidos++;
+                }
+            });
+        }
+
+        if (removidos > 0) {
+            overlaysRemovidos += removidos;
+        }
+
+        return removidos;
+    }
+
+    // 🆕 v11.11: FUNÇÃO: Desinstalar supressor
+    function desinstalarSupressorOverlay() {
+        if (observerOverlay) {
+            observerOverlay.disconnect();
+            observerOverlay = null;
+            console.log('🛡️ MutationObserver desconectado');
+        }
+
+        if (intervaloSupressor) {
+            clearInterval(intervaloSupressor);
+            intervaloSupressor = null;
+            console.log('🛡️ Supressor periódico desativado');
+        }
+
+        const style = document.getElementById('sprnds-overlay-suppressor');
+        if (style) {
+            style.remove();
+            console.log('🛡️ CSS supressor removido');
+        }
+
+        console.log('🛡️ Supressor desinstalado - Total removidos: ' + overlaysRemovidos);
+    }
+
     function instalarInterceptorXHR() {
         const XHROriginal = window.XMLHttpRequest;
         const XHROpen = XHROriginal.prototype.open;
@@ -81,7 +223,6 @@
             const method = xhr._method;
             const url = xhr._url;
 
-            // Monitora apenas requisições da API vaccine-sync
             if (url && url.includes('/api/vaccine-sync')) {
                 const requestId = ++contadorRequisicoesMonitoradas;
                 const timestamp = Date.now();
@@ -110,7 +251,6 @@
         console.log('✅ Interceptor XHR instalado');
     }
 
-    // 🆕 FUNÇÃO: Aguarda ambas requisições (POST + GET)
     async function aguardarAmbasRequisicoes(idVacina, timeoutMs = 20000) {
         const inicioEspera = Date.now();
         let postConcluido = false;
@@ -118,23 +258,21 @@
         
         console.log(`  [${idVacina}] ⏳ Aguardando POST + GET...`);
 
-        // Monitora requisições ativas
         const checkRequests = () => {
             const xhrs = performance.getEntriesByType('resource')
                 .filter(r => r.name.includes('/api/vaccine-sync') && r.responseEnd === 0);
             return xhrs.length;
         };
 
-        // Loop de espera
         while (Date.now() - inicioEspera < timeoutMs) {
             const ativas = checkRequests();
             
-            // Aguarda um pouco antes de verificar novamente
+            // 🆕 v11.11: Remove overlays durante a espera
+            forcarRemoverOverlays();
+            
             await aguardar(300);
 
-            // Verifica se não há mais requisições ativas
             if (ativas === 0) {
-                // Aguarda um pouco mais para garantir
                 await aguardar(500);
                 const ativasDepois = checkRequests();
                 
@@ -145,7 +283,6 @@
                 }
             }
 
-            // Log de progresso a cada 2 segundos
             const decorrido = Date.now() - inicioEspera;
             if (decorrido % 2000 < 300) {
                 console.log(`  [${idVacina}] ⏳ Aguardando... ${Math.floor(decorrido/1000)}s (${ativas} ativas)`);
@@ -156,12 +293,10 @@
         return false;
     }
 
-    // 🆕 FUNÇÃO: Detectar se há próxima página
     function temProximaPagina() {
         const paginador = document.querySelector('mat-paginator');
         if (!paginador) return false;
 
-        // Verifica botão "próxima página"
         const btnProximo = paginador.querySelector('.mat-paginator-navigation-next:not([disabled])');
         if (btnProximo) {
             const disabled = btnProximo.hasAttribute('disabled') || 
@@ -173,7 +308,6 @@
         return false;
     }
 
-    // 🆕 FUNÇÃO: Ir para próxima página
     async function irParaProximaPagina() {
         console.log('📄 Mudando para próxima página...');
         
@@ -189,7 +323,6 @@
             return false;
         }
 
-        // Verifica se está desabilitado
         if (btnProximo.hasAttribute('disabled') || 
             btnProximo.getAttribute('aria-disabled') === 'true' ||
             btnProximo.classList.contains('mat-button-disabled')) {
@@ -197,16 +330,17 @@
             return false;
         }
 
-        // Clica no botão
         clicarBotaoAngular(btnProximo);
         await aguardar(2000);
 
-        // Aguarda nova página carregar (até 60s)
         console.log('⏳ Aguardando nova página carregar...');
         let tentativas = 0;
         let linhasComConteudo = 0;
 
         while (tentativas < 60) {
+            // 🆕 v11.11: Remove overlays durante carregamento
+            forcarRemoverOverlays();
+            
             const linhas = document.querySelectorAll('mat-row.mat-row');
             linhasComConteudo = 0;
 
@@ -221,11 +355,10 @@
                 console.log(`  [${tentativas}s] Linhas com dados: ${linhasComConteudo}/${linhas.length}`);
             }
 
-            // Se tiver pelo menos 10 linhas COM DADOS, considera carregado
             if (linhasComConteudo >= 10) {
                 console.log('✅ Nova página carregada: ' + linhasComConteudo + ' registros!');
                 paginasProcessadas++;
-                await aguardar(2000); // Estabilização extra
+                await aguardar(2000);
                 return true;
             }
 
@@ -418,6 +551,7 @@
             csv += 'Erros Dados,' + totalErrosDados + '\n';
             csv += 'Total Pulados,' + totalPulados + '\n';
             csv += 'Paginas Processadas,' + paginasProcessadas + '\n';
+            csv += 'Overlays Removidos,' + overlaysRemovidos + '\n';
             csv += 'Velocidade Media (reg/min),' + velocidadeAtual + '\n';
             csv += 'Loops Detectados,' + loopsDetectados + '\n';
             csv += 'Registros Por Pagina,' + registrosPorPagina + '\n';
@@ -433,7 +567,7 @@
             const url = URL.createObjectURL(blob);
 
             const dataAtual = new Date();
-            const nomeArquivo = 'sprnds_reenvio_v11.10_' +
+            const nomeArquivo = 'sprnds_reenvio_v11.11_' +
                 dataAtual.getFullYear() +
                 String(dataAtual.getMonth() + 1).padStart(2, '0') +
                 String(dataAtual.getDate()).padStart(2, '0') + '_' +
@@ -449,7 +583,7 @@
             document.body.removeChild(link);
 
             console.log('📄 CSV exportado: ' + nomeArquivo);
-            alert('Relatório exportado com sucesso!\n\n' + historicoDetalhado.length + ' registros');
+            alert('Relatório exportado com sucesso!\n\n' + historicoDetalhado.length + ' registros\n' + overlaysRemovidos + ' overlays removidos');
 
         } catch (e) {
             console.error('Erro ao exportar CSV:', e);
@@ -467,7 +601,7 @@
         }
 
         const stats =
-            '📊 ESTATÍSTICAS DO REENVIO v11.10\n' +
+            '📊 ESTATÍSTICAS DO REENVIO v11.11\n' +
             '═══════════════════════════════════\n' +
             '✅ Sucesso: ' + totalProcessados + '\n' +
             '❌ Erros Total: ' + totalErros + '\n' +
@@ -475,6 +609,7 @@
             '  └─ 📋 Dados: ' + totalErrosDados + '\n' +
             '⏭️ Pulados: ' + totalPulados + '\n' +
             '📄 Páginas Processadas: ' + paginasProcessadas + '\n' +
+            '🛡️ Overlays Removidos: ' + overlaysRemovidos + '\n' +
             '🔁 Loops Detectados: ' + loopsDetectados + '\n' +
             '📄 Registros/Página: ' + registrosPorPagina + '\n' +
             '🔄 Ignorou Histórico: ' + (ignorarHistoricoSucesso ? 'Sim' : 'Não') + '\n' +
@@ -982,22 +1117,9 @@
         return disponiveis;
     }
 
+    // 🗑️ Função antiga (substituída por forcarRemoverOverlays)
     function forcarFecharSpinner() {
-        const spinners = document.querySelectorAll('ngx-spinner, .ngx-spinner-overlay, [bdcolor]');
-        spinners.forEach(function(spinner) {
-            if (spinner && spinner.style) {
-                spinner.style.display = 'none';
-                spinner.style.visibility = 'hidden';
-                spinner.style.opacity = '0';
-            }
-        });
-
-        const overlays = document.querySelectorAll('.cdk-overlay-backdrop, .mat-drawer-backdrop');
-        overlays.forEach(function(overlay) {
-            if (overlay && overlay.style) {
-                overlay.style.display = 'none';
-            }
-        });
+        forcarRemoverOverlays();
     }
 
     async function carregarPaginacaoUnica(tamanhoPagina) {
@@ -1044,6 +1166,9 @@
                     let linhasComConteudo = 0;
 
                     while (tentativas < 60) {
+                        // 🆕 v11.11: Remove overlays durante carregamento
+                        forcarRemoverOverlays();
+                        
                         const linhas = document.querySelectorAll('mat-row.mat-row');
                         linhasComConteudo = 0;
 
@@ -1128,6 +1253,9 @@
             let linhasComConteudo = 0;
 
             while (tentativas < 30) {
+                // 🆕 v11.11: Remove overlays durante carregamento
+                forcarRemoverOverlays();
+                
                 const linhas = document.querySelectorAll('mat-row.mat-row');
                 linhasComConteudo = 0;
 
@@ -1160,7 +1288,6 @@
         }
     }
 
-    // 🆕 v11.10: FUNÇÃO MODIFICADA - Aguarda POST + GET
     async function processarRegistro(registro, workerId) {
         const idTexto = registro.id;
         const inicioProcessamento = Date.now();
@@ -1193,7 +1320,6 @@
                 throw new Error('Nao foi possivel clicar no botao');
             }
 
-            // 🆕 v11.10: Aguarda ambas requisições (POST + GET)
             console.log('[W' + workerId + '] ⏳ Aguardando POST + GET...');
             const aguardouRequisicoes = await aguardarAmbasRequisicoes(idTexto, 20000);
             
@@ -1201,8 +1327,7 @@
                 console.warn('[W' + workerId + '] ⚠️ Timeout nas requisições, verificando diálogo...');
             }
 
-            // Verifica se houve erro (diálogo)
-            await aguardar(500); // Pequena pausa para diálogo aparecer
+            await aguardar(500);
             const dialogos = document.querySelectorAll('.nab-dialog-container, mat-dialog-container');
             let dialogoAberto = false;
             let mensagemErro = '';
@@ -1275,7 +1400,6 @@
                 totalProcessados++;
                 salvarDadosSessao();
 
-                // Pequena pausa antes do próximo
                 await aguardar(300);
 
                 return { sucesso: true, pulado: false, dialogo: false, id: idTexto };
@@ -1310,7 +1434,7 @@
         modal.style.cssText = 'position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 30px; border-radius: 8px; box-shadow: 0 8px 32px rgba(0,0,0,0.3); z-index: 10000; min-width: 550px; max-width: 650px;';
 
         modal.innerHTML =
-            '<h3 style="margin: 0 0 20px 0; color: #333; font-size: 18px;">🎯 Reenvio v11.10 DUAL REQUEST 📡</h3>' +
+            '<h3 style="margin: 0 0 20px 0; color: #333; font-size: 18px;">🎯 Reenvio v11.11 OVERLAY SUPPRESSOR 🛡️</h3>' +
 
             '<div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 12px; border-radius: 6px; margin-bottom: 15px; color: white;">' +
                 '<div style="display: flex; justify-content: space-between; margin-bottom: 5px;">' +
@@ -1321,7 +1445,11 @@
                     '<span style="font-size: 13px;">📄 Páginas Processadas:</span>' +
                     '<span id="paginas-processadas" style="font-weight: bold; font-size: 16px;">0</span>' +
                 '</div>' +
-                '<div style="font-size: 11px; opacity: 0.9;" id="status-adaptacao">Aguarda POST + GET...</div>' +
+                '<div style="display: flex; justify-content: space-between;">' +
+                    '<span style="font-size: 13px;">🛡️ Overlays Removidos:</span>' +
+                    '<span id="overlays-removidos" style="font-weight: bold; font-size: 16px;">0</span>' +
+                '</div>' +
+                '<div style="font-size: 11px; opacity: 0.9; margin-top: 5px;" id="status-adaptacao">POST+GET + Sem Overlays!</div>' +
             '</div>' +
 
             '<div style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); padding: 15px; border-radius: 6px; margin-bottom: 15px; color: white;">' +
@@ -1408,6 +1536,7 @@
         const disponiveisEl = document.getElementById('disponiveis-texto');
         const dialogosEl = document.getElementById('total-dialogos');
         const paginasEl = document.getElementById('paginas-processadas');
+        const overlaysEl = document.getElementById('overlays-removidos');
 
         if (processadosEl) processadosEl.textContent = processados;
         if (errosEl) errosEl.textContent = totalErros;
@@ -1418,6 +1547,7 @@
         if (disponiveisEl) disponiveisEl.textContent = disponiveis;
         if (dialogosEl) dialogosEl.textContent = dialogos;
         if (paginasEl) paginasEl.textContent = paginasProcessadas;
+        if (overlaysEl) overlaysEl.textContent = overlaysRemovidos;
 
         if (mensagem) {
             const mensagemEl = document.getElementById('mensagem-status');
@@ -1452,7 +1582,7 @@
         const statusEl = document.getElementById('status-adaptacao');
         if (statusEl) {
             const ativos = workers.filter(function(w) { return w.processando; }).length;
-            statusEl.textContent = ativos + ' de ' + workersAtual + ' workers ativos (POST+GET)';
+            statusEl.textContent = ativos + ' de ' + workersAtual + ' ativos (POST+GET + Sem Overlays!)';
         }
 
         let html = '<strong style="margin-bottom: 5px; display: block;">Workers Ativos:</strong>';
@@ -1477,18 +1607,18 @@
         
         conteudo.innerHTML = `
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px;">
-                <h2 style="margin: 0; color: #333; font-size: 22px;">⚙️ Configuração v11.10</h2>
+                <h2 style="margin: 0; color: #333; font-size: 22px;">⚙️ Configuração v11.11 🛡️</h2>
                 <button id="btn-fechar-config" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #999; padding: 0; width: 30px; height: 30px;" title="Fechar">×</button>
             </div>
             
             <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 8px; margin-bottom: 25px;">
                 <div style="font-size: 13px; line-height: 1.6;">
-                    <strong>🆕 v11.10:</strong> Aguarda POST + GET antes de continuar!
-                    <br>📡 Sincronização completa garantida
+                    <strong>🆕 v11.11:</strong> Suprime overlays automaticamente!
+                    <br>🛡️ Sem travamentos de loading
+                    <br>📡 POST + GET sincronizados
                 </div>
             </div>
             
-            <!-- Workers Mínimo -->
             <div style="margin-bottom: 20px;">
                 <label style="display: block; margin-bottom: 8px; font-weight: 600; color: #333; font-size: 14px;">
                     🤖 Workers Mínimo
@@ -1500,7 +1630,6 @@
                 <div style="font-size: 11px; color: #666; margin-top: 5px;">Recomendado: 1-3</div>
             </div>
             
-            <!-- Workers Máximo -->
             <div style="margin-bottom: 20px;">
                 <label style="display: block; margin-bottom: 8px; font-weight: 600; color: #333; font-size: 14px;">
                     🚀 Workers Máximo
@@ -1512,7 +1641,6 @@
                 <div style="font-size: 11px; color: #666; margin-top: 5px;">Recomendado: 3-7 (máximo: 10)</div>
             </div>
             
-            <!-- Delay -->
             <div style="margin-bottom: 20px;">
                 <label style="display: block; margin-bottom: 8px; font-weight: 600; color: #333; font-size: 14px;">
                     ⏱️ Delay entre lotes (ms)
@@ -1524,7 +1652,6 @@
                 <div style="font-size: 11px; color: #666; margin-top: 5px;">Recomendado: 300-1000ms</div>
             </div>
             
-            <!-- Registros por Página -->
             <div style="margin-bottom: 20px;">
                 <label style="display: block; margin-bottom: 8px; font-weight: 600; color: #333; font-size: 14px;">
                     📄 Registros por Página
@@ -1541,7 +1668,6 @@
                 <div style="font-size: 11px; color: #666; margin-top: 5px;">Valores maiores = menos recargas, mas tempo de espera maior</div>
             </div>
             
-            <!-- Ignorar Histórico -->
             <div style="margin-bottom: 25px;">
                 <label style="display: block; margin-bottom: 12px; font-weight: 600; color: #333; font-size: 14px;">
                     🔄 Comportamento de Reprocessamento
@@ -1566,7 +1692,6 @@
                 </div>
             </div>
             
-            <!-- Resumo da Memória -->
             <div id="resumo-memoria" style="margin-bottom: 25px; padding: 15px; background: #e3f2fd; border-radius: 8px; border-left: 4px solid #2196f3;">
                 <div style="font-weight: 600; color: #1565c0; margin-bottom: 8px;">📊 Status da Memória</div>
                 <div style="font-size: 12px; color: #333; line-height: 1.6;">
@@ -1576,7 +1701,6 @@
                 </div>
             </div>
             
-            <!-- Botões de Ação -->
             <div style="display: flex; gap: 10px;">
                 <button id="btn-iniciar-reenvio" 
                     style="flex: 1; padding: 12px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 15px; transition: transform 0.2s, box-shadow 0.2s; box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);"
@@ -1592,9 +1716,8 @@
                 </button>
             </div>
             
-            <!-- Footer -->
             <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #e0e0e0; text-align: center; font-size: 11px; color: #999;">
-                SPRNDS Reenvio v11.10 - Dual Request Wait 📡
+                SPRNDS Reenvio v11.11 - Overlay Suppressor 🛡️
             </div>
         `;
         
@@ -1698,6 +1821,7 @@
         processosCancelados = false;
         ignorarHistoricoSucesso = forcarIgnorarHistorico;
         paginasProcessadas = 0;
+        overlaysRemovidos = 0;
 
         idsProcessadosNaSessaoAtual = {};
 
@@ -1727,12 +1851,13 @@
 
         tempoInicioProcesamento = Date.now();
 
-        console.log('🎯 Iniciando v11.10 DUAL REQUEST: ' + workersMinimo + ' → ' + workersMaximo + ' workers | ' + tamanhoPagina + ' registros/página');
+        console.log('🎯 Iniciando v11.11 OVERLAY SUPPRESSOR: ' + workersMinimo + ' → ' + workersMaximo + ' workers | ' + tamanhoPagina + ' registros/página');
         console.log('🔄 Ignorar histórico de sucessos: ' + (ignorarHistoricoSucesso ? 'SIM' : 'NÃO'));
         console.log('📡 Aguarda POST + GET antes de continuar');
+        console.log('🛡️ Overlays serão suprimidos automaticamente');
 
-        // 🆕 v11.10: Instala interceptor XHR
         instalarInterceptorXHR();
+        instalarSupressorOverlay();
 
         const modal = criarModalProgresso();
 
@@ -1741,6 +1866,7 @@
         if (!carregouPaginacao) {
             alert('❌ Não foi possível carregar paginação única!\n\nTente recarregar a página.');
             processandoReenvio = false;
+            desinstalarSupressorOverlay();
             fecharModal();
             return;
         }
@@ -1758,6 +1884,8 @@
         let tentativasEstavel = 0;
 
         while (tentativasLoad < MAX_WAIT_SECONDS) {
+            forcarRemoverOverlays();
+            
             const linhas = document.querySelectorAll('mat-row.mat-row');
             const linhasAtual = linhas.length;
 
@@ -1866,7 +1994,6 @@
             });
         }
 
-        // LOOP PRINCIPAL COM AUTO-PAGINAÇÃO
         while (true) {
             if (processosCancelados) {
                 console.log('❌ Cancelado pelo usuário');
@@ -1883,18 +2010,15 @@
 
             let disponiveis = contarRegistrosDisponiveis();
 
-            // SE NÃO HÁ MAIS REGISTROS NA PÁGINA ATUAL
             if (disponiveis === 0) {
                 console.log('📄 Não há mais registros na página atual');
                 
-                // Verifica se há próxima página
                 if (temProximaPagina()) {
                     console.log('📄 Mudando para próxima página...');
                     const mudouPagina = await irParaProximaPagina();
                     
                     if (mudouPagina) {
                         console.log('✅ Nova página carregada! Continuando processamento...');
-                        // Limpa IDs da sessão atual ao mudar de página
                         idsProcessadosNaSessaoAtual = {};
                         continue;
                     } else {
@@ -1915,7 +2039,6 @@
                 await aguardar(2000);
                 const registrosAposAguardar = obterProximosRegistros(workersAUsar);
                 if (registrosAposAguardar.length === 0) {
-                    // Verifica se há próxima página antes de finalizar
                     if (temProximaPagina()) {
                         console.log('📄 Sem registros aqui, tentando próxima página...');
                         const mudouPagina = await irParaProximaPagina();
@@ -1940,7 +2063,7 @@
             atualizarWorkersStatus(workers);
             const dispAtual = contarRegistrosDisponiveis();
             atualizarProgresso(totalProcessados, dispAtual,
-                'Processando ' + registros.length + ' em paralelo (POST+GET)...',
+                'Processando ' + registros.length + ' em paralelo (POST+GET + Sem Overlays)...',
                 totalDialogosFechados);
 
             const promises = registros.map(function(registro, index) {
@@ -1973,6 +2096,7 @@
 
         clearInterval(intervaloTempo);
         processandoReenvio = false;
+        desinstalarSupressorOverlay();
 
         salvarDadosPersistentes();
         salvarDadosSessao();
@@ -1980,11 +2104,12 @@
         const tempoTotal = Math.floor((Date.now() - tempoInicioProcesamento) / 1000);
         console.log('🏁 Finalizado em ' + tempoTotal + 's');
         console.log('📄 Total de páginas processadas: ' + paginasProcessadas);
+        console.log('🛡️ Total de overlays removidos: ' + overlaysRemovidos);
 
         tocarSomConclusao();
-        mostrarNotificacao('✅ Reenvio Concluído', 'Processados: ' + totalProcessados + ' | Erros: ' + totalErros + ' | Páginas: ' + paginasProcessadas);
+        mostrarNotificacao('✅ Reenvio Concluído', 'Processados: ' + totalProcessados + ' | Erros: ' + totalErros + ' | Páginas: ' + paginasProcessadas + ' | Overlays: ' + overlaysRemovidos);
 
-        alert('✅ Processo finalizado!\n\nTempo: ' + tempoTotal + 's\nProcessados: ' + totalProcessados + '\nErros: ' + totalErros + '\nPáginas: ' + paginasProcessadas);
+        alert('✅ Processo finalizado!\n\nTempo: ' + tempoTotal + 's\nProcessados: ' + totalProcessados + '\nErros: ' + totalErros + '\nPáginas: ' + paginasProcessadas + '\nOverlays Removidos: ' + overlaysRemovidos);
         fecharModal();
     }
 
@@ -2016,7 +2141,7 @@ function adicionarBotaoInterface() {
 
             const botao = document.createElement('button');
             botao.id = 'btn-reenviar-premium';
-            botao.innerHTML = '📡 Reenviar v11.10';
+            botao.innerHTML = '🛡️ Reenviar v11.11';
             botao.style.cssText = 'padding: 8px 16px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 14px; box-shadow: 0 2px 8px rgba(0,0,0,0.2); transition: transform 0.2s;';
 
             botao.addEventListener('mouseenter', function() {
@@ -2090,7 +2215,7 @@ function adicionarBotaoInterface() {
             botaoAdicionado = true;
             clearInterval(intervalo);
 
-            console.log('✅ Botões v11.10 adicionados com sucesso!');
+            console.log('✅ Botões v11.11 adicionados com sucesso!');
             console.log('📍 Local: ' + (container.id || container.className || 'container genérico'));
         }
     }, 1000);
