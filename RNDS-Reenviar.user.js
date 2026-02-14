@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         SPRNDS - Reenviar Premium v11.8 FIX COMPLETO
+// @name         SPRNDS - Reenviar Premium v11.9 AUTO PAGINATION
 // @namespace    http://tampermonkey.net/
-// @version      11.8
-// @description  Fix loop infinito + Espera dinâmica + Carregamento via dropdown
+// @version      11.9
+// @description  Fix loop infinito + Espera dinâmica + Carregamento via dropdown + Auto paginação
 // @author       Voce
 // @match        *://*/rnds/vaccine-sync*
 // @grant        GM_notification
@@ -15,7 +15,7 @@
 (function() {
     'use strict';
 
-    console.log('🎯 SPRNDS v11.8 FIX COMPLETO carregado! 🚀🔄');
+    console.log('🎯 SPRNDS v11.9 AUTO PAGINATION carregado! 🚀🔄📄');
 
     let processandoReenvio = false;
     let processosCancelados = false;
@@ -25,11 +25,12 @@
     let totalErrosServidor = 0;
     let totalPulados = 0;
     let botaoAdicionado = false;
+    let paginasProcessadas = 0;
 
     let tentativasPorId = {};
     let processandoIds = {};
     let idsProcessadosComSucesso = {};
-    let idsProcessadosNaSessaoAtual = {}; // 🔥 NOVO: Previne loop infinito
+    let idsProcessadosNaSessaoAtual = {};
     const MAX_TENTATIVAS = 3;
 
     const STORAGE_KEY = 'sprnds_tentativas_reenvio';
@@ -58,6 +59,87 @@
     let paginacaoCarregada = false;
     let registrosPorPagina = 500;
     let ignorarHistoricoSucesso = false;
+
+    // 🆕 FUNÇÃO: Detectar se há próxima página
+    function temProximaPagina() {
+        const paginador = document.querySelector('mat-paginator');
+        if (!paginador) return false;
+
+        // Verifica botão "próxima página"
+        const btnProximo = paginador.querySelector('.mat-paginator-navigation-next:not([disabled])');
+        if (btnProximo) {
+            const disabled = btnProximo.hasAttribute('disabled') || 
+                           btnProximo.getAttribute('aria-disabled') === 'true' ||
+                           btnProximo.classList.contains('mat-button-disabled');
+            return !disabled;
+        }
+
+        return false;
+    }
+
+    // 🆕 FUNÇÃO: Ir para próxima página
+    async function irParaProximaPagina() {
+        console.log('📄 Mudando para próxima página...');
+        
+        const paginador = document.querySelector('mat-paginator');
+        if (!paginador) {
+            console.error('❌ Paginador não encontrado');
+            return false;
+        }
+
+        const btnProximo = paginador.querySelector('.mat-paginator-navigation-next');
+        if (!btnProximo) {
+            console.error('❌ Botão próxima página não encontrado');
+            return false;
+        }
+
+        // Verifica se está desabilitado
+        if (btnProximo.hasAttribute('disabled') || 
+            btnProximo.getAttribute('aria-disabled') === 'true' ||
+            btnProximo.classList.contains('mat-button-disabled')) {
+            console.log('📄 Última página alcançada');
+            return false;
+        }
+
+        // Clica no botão
+        clicarBotaoAngular(btnProximo);
+        await aguardar(2000);
+
+        // Aguarda nova página carregar (até 60s)
+        console.log('⏳ Aguardando nova página carregar...');
+        let tentativas = 0;
+        let linhasComConteudo = 0;
+
+        while (tentativas < 60) {
+            const linhas = document.querySelectorAll('mat-row.mat-row');
+            linhasComConteudo = 0;
+
+            linhas.forEach(function(linha) {
+                const idCol = linha.querySelector('.cdk-column-vaccineId');
+                if (idCol && idCol.textContent.trim().length > 0) {
+                    linhasComConteudo++;
+                }
+            });
+
+            if (tentativas % 5 === 0) {
+                console.log(`  [${tentativas}s] Linhas com dados: ${linhasComConteudo}/${linhas.length}`);
+            }
+
+            // Se tiver pelo menos 10 linhas COM DADOS, considera carregado
+            if (linhasComConteudo >= 10) {
+                console.log('✅ Nova página carregada: ' + linhasComConteudo + ' registros!');
+                paginasProcessadas++;
+                await aguardar(2000); // Estabilização extra
+                return true;
+            }
+
+            await aguardar(1000);
+            tentativas++;
+        }
+
+        console.warn('⚠️ Timeout: apenas ' + linhasComConteudo + ' linhas com dados após 60s');
+        return linhasComConteudo > 0;
+    }
 
     function detectarNovaSessao() {
         try {
@@ -239,6 +321,7 @@
             csv += 'Erros Servidor,' + totalErrosServidor + '\n';
             csv += 'Erros Dados,' + totalErrosDados + '\n';
             csv += 'Total Pulados,' + totalPulados + '\n';
+            csv += 'Paginas Processadas,' + paginasProcessadas + '\n';
             csv += 'Velocidade Media (reg/min),' + velocidadeAtual + '\n';
             csv += 'Loops Detectados,' + loopsDetectados + '\n';
             csv += 'Registros Por Pagina,' + registrosPorPagina + '\n';
@@ -254,7 +337,7 @@
             const url = URL.createObjectURL(blob);
 
             const dataAtual = new Date();
-            const nomeArquivo = 'sprnds_reenvio_v11.8_' +
+            const nomeArquivo = 'sprnds_reenvio_v11.9_' +
                 dataAtual.getFullYear() +
                 String(dataAtual.getMonth() + 1).padStart(2, '0') +
                 String(dataAtual.getDate()).padStart(2, '0') + '_' +
@@ -288,13 +371,14 @@
         }
 
         const stats =
-            '📊 ESTATÍSTICAS DO REENVIO v11.8\n' +
+            '📊 ESTATÍSTICAS DO REENVIO v11.9\n' +
             '═══════════════════════════════════\n' +
             '✅ Sucesso: ' + totalProcessados + '\n' +
             '❌ Erros Total: ' + totalErros + '\n' +
             '  ├─ 🖥️ Servidor: ' + totalErrosServidor + '\n' +
             '  └─ 📋 Dados: ' + totalErrosDados + '\n' +
             '⏭️ Pulados: ' + totalPulados + '\n' +
+            '📄 Páginas Processadas: ' + paginasProcessadas + '\n' +
             '🔁 Loops Detectados: ' + loopsDetectados + '\n' +
             '📄 Registros/Página: ' + registrosPorPagina + '\n' +
             '🔄 Ignorou Histórico: ' + (ignorarHistoricoSucesso ? 'Sim' : 'Não') + '\n' +
@@ -727,7 +811,6 @@
         };
     }
 
-    // 🔥 FUNÇÃO CORRIGIDA: Previne loop infinito
     function obterProximosRegistros(quantidade) {
         const linhas = document.querySelectorAll('mat-row.mat-row');
         const registros = [];
@@ -744,12 +827,10 @@
                         const idVacina = linha.querySelector('.cdk-column-vaccineId');
                         const idTexto = idVacina ? idVacina.textContent.trim() : 'ID_' + i;
 
-                        // 🔥 FIX LOOP: SEMPRE pula IDs da sessão atual
                         if (idsProcessadosNaSessaoAtual[idTexto]) {
                             continue;
                         }
 
-                        // Respeita histórico antigo apenas se não estiver ignorando
                         if (!ignorarHistoricoSucesso && idsProcessadosComSucesso[idTexto]) {
                             continue;
                         }
@@ -785,7 +866,6 @@
                 const idVacina = linha.querySelector('.cdk-column-vaccineId');
                 const idTexto = idVacina ? idVacina.textContent.trim() : 'ID_desconhecido';
 
-                // 🔥 FIX: Também respeita sessão atual aqui
                 if (idsProcessadosNaSessaoAtual[idTexto]) {
                     return;
                 }
@@ -824,7 +904,6 @@
         });
     }
 
-    // 🔥 FUNÇÃO TOTALMENTE REESCRITA: Carrega via dropdown (evita linhas vazias)
     async function carregarPaginacaoUnica(tamanhoPagina) {
         console.log('📄 Carregando paginação via DROPDOWN: ' + tamanhoPagina + ' registros...');
 
@@ -835,17 +914,14 @@
         }
 
         try {
-            // 🔥 MÉTODO 1: Clicar no dropdown select (simula usuário real)
             const selectPageSize = paginador.querySelector('.mat-select, mat-select');
 
             if (selectPageSize) {
                 console.log('✅ Dropdown encontrado, abrindo...');
 
-                // Clica para abrir o dropdown
                 clicarBotaoAngular(selectPageSize);
                 await aguardar(800);
 
-                // Busca a opção com o valor desejado no panel aberto
                 const opcoes = document.querySelectorAll('.mat-option, mat-select-panel .mat-option-text, .mat-option .mat-option-text');
                 let opcaoEncontrada = null;
 
@@ -856,10 +932,9 @@
 
                     console.log('  Opção disponível: ' + texto);
 
-                    // Procura a opção exata ou a maior disponível
                     if (!isNaN(numero) && (numero === tamanhoPagina || (numero > tamanhoPagina / 2 && !opcaoEncontrada))) {
                         opcaoEncontrada = opcaoElement;
-                        if (numero === tamanhoPagina) break; // Se achou exato, para
+                        if (numero === tamanhoPagina) break;
                     }
                 }
 
@@ -868,7 +943,6 @@
                     clicarBotaoAngular(opcaoEncontrada);
                     await aguardar(2000);
 
-                    // Aguarda a tabela carregar (até 60s)
                     console.log('⏳ Aguardando dados carregarem...');
                     let tentativas = 0;
                     let linhasComConteudo = 0;
@@ -877,7 +951,6 @@
                         const linhas = document.querySelectorAll('mat-row.mat-row');
                         linhasComConteudo = 0;
 
-                        // Conta quantas linhas TÊM CONTEÚDO (não estão vazias)
                         linhas.forEach(function(linha) {
                             const idCol = linha.querySelector('.cdk-column-vaccineId');
                             if (idCol && idCol.textContent.trim().length > 0) {
@@ -889,10 +962,9 @@
                             console.log(`  [${tentativas}s] Linhas com dados: ${linhasComConteudo}/${linhas.length}`);
                         }
 
-                        // Se tiver pelo menos 10 linhas COM DADOS, considera sucesso
                         if (linhasComConteudo >= 10) {
                             console.log('✅ Dados carregados: ' + linhasComConteudo + ' registros com conteúdo!');
-                            await aguardar(1000); // Estabilização extra
+                            await aguardar(1000);
                             return true;
                         }
 
@@ -901,13 +973,12 @@
                     }
 
                     console.warn('⚠️ Timeout: apenas ' + linhasComConteudo + ' linhas com dados após 60s');
-                    return linhasComConteudo > 0; // Retorna true se pelo menos algo carregou
+                    return linhasComConteudo > 0;
                 } else {
                     console.error('❌ Opção ' + tamanhoPagina + ' não encontrada no dropdown');
                 }
             }
 
-            // 🔥 MÉTODO 2 (FALLBACK): Se dropdown não funcionar, tenta método antigo
             console.warn('⚠️ Dropdown não encontrado, tentando método alternativo...');
 
             const chaveAngular = Object.keys(paginador).find(function(k) {
@@ -993,7 +1064,6 @@
         }
     }
 
-    // 🔥 FUNÇÃO CORRIGIDA: Marca na sessão atual para evitar loop
     async function processarRegistro(registro, workerId) {
         const idTexto = registro.id;
         const inicioProcessamento = Date.now();
@@ -1083,9 +1153,8 @@
                 delete processandoIds[idTexto];
                 delete tentativasPorId[idTexto];
 
-                // 🔥 FIX LOOP: Marca em AMBOS os controles
                 idsProcessadosComSucesso[idTexto] = true;
-                idsProcessadosNaSessaoAtual[idTexto] = true; // <- Previne reprocessamento!
+                idsProcessadosNaSessaoAtual[idTexto] = true;
 
                 salvarDadosPersistentes();
 
@@ -1135,12 +1204,16 @@
         modal.style.cssText = 'position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 30px; border-radius: 8px; box-shadow: 0 8px 32px rgba(0,0,0,0.3); z-index: 10000; min-width: 550px; max-width: 650px;';
 
         modal.innerHTML =
-            '<h3 style="margin: 0 0 20px 0; color: #333; font-size: 18px;">🎯 Reenvio v11.8 FIX COMPLETO 🔄</h3>' +
+            '<h3 style="margin: 0 0 20px 0; color: #333; font-size: 18px;">🎯 Reenvio v11.9 AUTO PAGINATION 🔄</h3>' +
 
             '<div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 12px; border-radius: 6px; margin-bottom: 15px; color: white;">' +
                 '<div style="display: flex; justify-content: space-between; margin-bottom: 5px;">' +
                     '<span style="font-size: 13px;">🤖 Workers Atual:</span>' +
                     '<span id="workers-adaptativo" style="font-weight: bold; font-size: 16px;">1</span>' +
+                '</div>' +
+                '<div style="display: flex; justify-content: space-between; margin-bottom: 5px;">' +
+                    '<span style="font-size: 13px;">📄 Páginas Processadas:</span>' +
+                    '<span id="paginas-processadas" style="font-weight: bold; font-size: 16px;">0</span>' +
                 '</div>' +
                 '<div style="font-size: 11px; opacity: 0.9;" id="status-adaptacao">Iniciando no mínimo...</div>' +
             '</div>' +
@@ -1228,6 +1301,7 @@
         const loopsEl = document.getElementById('total-loops');
         const disponiveisEl = document.getElementById('disponiveis-texto');
         const dialogosEl = document.getElementById('total-dialogos');
+        const paginasEl = document.getElementById('paginas-processadas');
 
         if (processadosEl) processadosEl.textContent = processados;
         if (errosEl) errosEl.textContent = totalErros;
@@ -1237,6 +1311,7 @@
         if (loopsEl) loopsEl.textContent = loopsDetectados;
         if (disponiveisEl) disponiveisEl.textContent = disponiveis;
         if (dialogosEl) dialogosEl.textContent = dialogos;
+        if (paginasEl) paginasEl.textContent = paginasProcessadas;
 
         if (mensagem) {
             const mensagemEl = document.getElementById('mensagem-status');
@@ -1286,7 +1361,6 @@
         container.innerHTML = html;
     }
 
-    // 🆕 NOVA FUNÇÃO: Modal de configuração moderno
     function criarModalConfiguracao() {
         const modal = document.createElement('div');
         modal.id = 'modal-config-reenvio';
@@ -1414,20 +1488,18 @@
             
             <!-- Footer -->
             <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #e0e0e0; text-align: center; font-size: 11px; color: #999;">
-                SPRNDS Reenvio Premium v11.8
+                SPRNDS Reenvio Premium v11.9 - Auto Pagination
             </div>
         `;
         
         modal.appendChild(conteudo);
         document.body.appendChild(modal);
         
-        // Atualizar resumo da memória
         const stats = obterEstatisticasMemoria();
         document.getElementById('mem-sucesso').textContent = stats.sucesso;
         document.getElementById('mem-tentativas').textContent = stats.total;
         document.getElementById('mem-pulados').textContent = stats.pulados;
         
-        // Validação em tempo real
         const minWorkersInput = document.getElementById('config-min-workers');
         const maxWorkersInput = document.getElementById('config-max-workers');
         
@@ -1451,16 +1523,13 @@
         minWorkersInput.addEventListener('input', validarWorkers);
         maxWorkersInput.addEventListener('input', validarWorkers);
         
-        // Event Listeners
         document.getElementById('btn-fechar-config').addEventListener('click', function() { modal.remove(); });
         document.getElementById('btn-cancelar-config').addEventListener('click', function() { modal.remove(); });
         
-        // Fechar ao clicar fora
         modal.addEventListener('click', function(e) {
             if (e.target === modal) modal.remove();
         });
         
-        // ESC para fechar
         document.addEventListener('keydown', function(e) {
             if (e.key === 'Escape' && document.getElementById('modal-config-reenvio')) {
                 modal.remove();
@@ -1479,7 +1548,6 @@
             const tamanhoPagina = parseInt(document.getElementById('config-registros-pagina').value);
             const ignorarHistorico = document.querySelector('input[name="ignorar-historico"]:checked').value === '1';
             
-            // Validações finais
             if (maxWorkers > 10) {
                 const confirmar = confirm(
                     '⚠️ AVISO: Workers máximo muito alto!\n\n' +
@@ -1496,11 +1564,9 @@
             reenviarTodos(minWorkers, maxWorkers, delayMs, tamanhoPagina, ignorarHistorico);
         });
         
-        // Focar no primeiro campo
         setTimeout(function() { minWorkersInput.focus(); }, 100);
     }
 
-    // 🔥 FUNÇÃO PRINCIPAL COM ESPERA DINÂMICA (5 MIN)
     async function reenviarTodos(minWorkers, maxWorkers, delayMs, tamanhoPagina, forcarIgnorarHistorico) {
         if (processandoReenvio) {
             alert('Processo em andamento!');
@@ -1525,8 +1591,8 @@
         processandoReenvio = true;
         processosCancelados = false;
         ignorarHistoricoSucesso = forcarIgnorarHistorico;
+        paginasProcessadas = 0;
 
-        // 🔥 FIX: Limpa controle de sessão ao iniciar
         idsProcessadosNaSessaoAtual = {};
 
         workersMinimo = minWorkers;
@@ -1555,8 +1621,9 @@
 
         tempoInicioProcesamento = Date.now();
 
-        console.log('🎯 Iniciando v11.8 FIX COMPLETO: ' + workersMinimo + ' → ' + workersMaximo + ' workers | ' + tamanhoPagina + ' registros/página');
+        console.log('🎯 Iniciando v11.9 AUTO PAGINATION: ' + workersMinimo + ' → ' + workersMaximo + ' workers | ' + tamanhoPagina + ' registros/página');
         console.log('🔄 Ignorar histórico de sucessos: ' + (ignorarHistoricoSucesso ? 'SIM' : 'NÃO'));
+        console.log('📄 Navegação automática de páginas: ATIVA');
 
         const modal = criarModalProgresso();
 
@@ -1569,7 +1636,6 @@
             return;
         }
 
-        // 🔥 ESPERA DINÂMICA MELHORADA (5 MINUTOS)
         console.log('⏳ Aguardando grid estabilizar (max 5min)...');
 
         try {
@@ -1578,7 +1644,7 @@
         } catch(e) {}
 
         let tentativasLoad = 0;
-        const MAX_WAIT_SECONDS = 300; // 5 minutos
+        const MAX_WAIT_SECONDS = 300;
         let linhasAnterior = 0;
         let tentativasEstavel = 0;
 
@@ -1586,14 +1652,12 @@
             const linhas = document.querySelectorAll('mat-row.mat-row');
             const linhasAtual = linhas.length;
 
-            // Conta linhas com conteúdo real
             let linhasComDados = 0;
             linhas.forEach(function(l) {
                 const id = l.querySelector('.cdk-column-vaccineId');
                 if (id && id.textContent.trim()) linhasComDados++;
             });
 
-            // Se estabilizou em mais de 20 linhas por 3 segundos, considera carregado
             if (linhasComDados > 20) {
                 if (linhasComDados === linhasAnterior) {
                     tentativasEstavel++;
@@ -1693,6 +1757,7 @@
             });
         }
 
+        // 🆕 LOOP PRINCIPAL COM AUTO-PAGINAÇÃO
         while (true) {
             if (processosCancelados) {
                 console.log('❌ Cancelado pelo usuário');
@@ -1709,10 +1774,29 @@
 
             let disponiveis = contarRegistrosDisponiveis();
 
+            // 🆕 SE NÃO HÁ MAIS REGISTROS NA PÁGINA ATUAL
             if (disponiveis === 0) {
-                console.log('✅ Nenhum registro pendente - Finalizando!');
-                atualizarProgresso(totalProcessados, 0, 'Todos processados!', totalDialogosFechados);
-                break;
+                console.log('📄 Não há mais registros na página atual');
+                
+                // Verifica se há próxima página
+                if (temProximaPagina()) {
+                    console.log('📄 Mudando para próxima página...');
+                    const mudouPagina = await irParaProximaPagina();
+                    
+                    if (mudouPagina) {
+                        console.log('✅ Nova página carregada! Continuando processamento...');
+                        // Limpa IDs da sessão atual ao mudar de página
+                        idsProcessadosNaSessaoAtual = {};
+                        continue;
+                    } else {
+                        console.log('❌ Não foi possível mudar de página');
+                        break;
+                    }
+                } else {
+                    console.log('✅ Última página alcançada - Finalizando!');
+                    atualizarProgresso(totalProcessados, 0, 'Todas as páginas processadas!', totalDialogosFechados);
+                    break;
+                }
             }
 
             const workersAUsar = Math.min(workersAtual, disponiveis);
@@ -1722,6 +1806,15 @@
                 await aguardar(2000);
                 const registrosAposAguardar = obterProximosRegistros(workersAUsar);
                 if (registrosAposAguardar.length === 0) {
+                    // Verifica se há próxima página antes de finalizar
+                    if (temProximaPagina()) {
+                        console.log('📄 Sem registros aqui, tentando próxima página...');
+                        const mudouPagina = await irParaProximaPagina();
+                        if (mudouPagina) {
+                            idsProcessadosNaSessaoAtual = {};
+                            continue;
+                        }
+                    }
                     console.log('✅ Fim! Nenhum registro encontrado.');
                     break;
                 }
@@ -1777,11 +1870,12 @@
 
         const tempoTotal = Math.floor((Date.now() - tempoInicioProcesamento) / 1000);
         console.log('🏁 Finalizado em ' + tempoTotal + 's');
+        console.log('📄 Total de páginas processadas: ' + paginasProcessadas);
 
         tocarSomConclusao();
-        mostrarNotificacao('✅ Reenvio Concluído', 'Processados: ' + totalProcessados + ' | Erros: ' + totalErros);
+        mostrarNotificacao('✅ Reenvio Concluído', 'Processados: ' + totalProcessados + ' | Erros: ' + totalErros + ' | Páginas: ' + paginasProcessadas);
 
-        alert('✅ Processo finalizado!\n\nTempo: ' + tempoTotal + 's\nProcessados: ' + totalProcessados + '\nErros: ' + totalErros);
+        alert('✅ Processo finalizado!\n\nTempo: ' + tempoTotal + 's\nProcessados: ' + totalProcessados + '\nErros: ' + totalErros + '\nPáginas: ' + paginasProcessadas);
         fecharModal();
     }
 
@@ -1789,14 +1883,12 @@ function adicionarBotaoInterface() {
     if (botaoAdicionado) return;
 
     const intervalo = setInterval(function() {
-        // Tenta múltiplos seletores possíveis
         let container = document.querySelector('.mat-toolbar');
         if (!container) container = document.querySelector('mat-toolbar');
         if (!container) container = document.querySelector('header');
         if (!container) container = document.querySelector('.toolbar');
         if (!container) container = document.querySelector('[role="toolbar"]');
 
-        // Se não encontrou nenhum container, cria um fixo no topo
         if (!container) {
             const bodyCheck = document.querySelector('body');
             if (bodyCheck && !document.getElementById('container-botoes-premium')) {
@@ -1815,7 +1907,7 @@ function adicionarBotaoInterface() {
 
             const botao = document.createElement('button');
             botao.id = 'btn-reenviar-premium';
-            botao.innerHTML = '🔄 Reenviar Premium v11.8';
+            botao.innerHTML = '🔄 Reenviar Premium v11.9';
             botao.style.cssText = 'padding: 8px 16px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 14px; box-shadow: 0 2px 8px rgba(0,0,0,0.2); transition: transform 0.2s;';
 
             botao.addEventListener('mouseenter', function() {
@@ -1843,7 +1935,6 @@ function adicionarBotaoInterface() {
                     }
                 }
 
-                // 🆕 Abre o modal de configuração moderno
                 criarModalConfiguracao();
             });
 
@@ -1890,12 +1981,11 @@ function adicionarBotaoInterface() {
             botaoAdicionado = true;
             clearInterval(intervalo);
 
-            console.log('✅ Botões v11.8 adicionados com sucesso!');
+            console.log('✅ Botões v11.9 adicionados com sucesso!');
             console.log('📍 Local: ' + (container.id || container.className || 'container genérico'));
         }
     }, 1000);
 
-    // Timeout de segurança: após 30s, força criar no body
     setTimeout(function() {
         if (!botaoAdicionado) {
             console.warn('⚠️ Toolbar não encontrada após 30s, criando container fixo...');
@@ -1906,7 +1996,6 @@ function adicionarBotaoInterface() {
             containerFixo.style.cssText = 'position: fixed; top: 10px; right: 10px; z-index: 99999; background: white; padding: 10px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3);';
             document.body.appendChild(containerFixo);
 
-            // Reexecuta para adicionar os botões no container fixo
             botaoAdicionado = false;
             adicionarBotaoInterface();
         }
