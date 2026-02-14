@@ -1286,6 +1286,220 @@
         container.innerHTML = html;
     }
 
+    // 🆕 NOVA FUNÇÃO: Modal de configuração moderno
+    function criarModalConfiguracao() {
+        const modal = document.createElement('div');
+        modal.id = 'modal-config-reenvio';
+        modal.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 99999; display: flex; align-items: center; justify-content: center;';
+        
+        const conteudo = document.createElement('div');
+        conteudo.style.cssText = 'background: white; border-radius: 12px; padding: 30px; max-width: 550px; width: 90%; box-shadow: 0 10px 40px rgba(0,0,0,0.3); max-height: 90vh; overflow-y: auto;';
+        
+        conteudo.innerHTML = `
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px;">
+                <h2 style="margin: 0; color: #333; font-size: 22px;">⚙️ Configuração do Reenvio</h2>
+                <button id="btn-fechar-config" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #999; padding: 0; width: 30px; height: 30px;" title="Fechar">×</button>
+            </div>
+            
+            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 8px; margin-bottom: 25px;">
+                <div style="font-size: 13px; line-height: 1.6;">
+                    <strong>💡 Dica:</strong> Comece com valores conservadores e ajuste conforme necessário.
+                    <br>Workers altos podem sobrecarregar o servidor!
+                </div>
+            </div>
+            
+            <!-- Workers Mínimo -->
+            <div style="margin-bottom: 20px;">
+                <label style="display: block; margin-bottom: 8px; font-weight: 600; color: #333; font-size: 14px;">
+                    🤖 Workers Mínimo
+                    <span style="color: #999; font-weight: normal; font-size: 12px;" title="Número inicial de processamentos paralelos">(ℹ️)</span>
+                </label>
+                <input type="number" id="config-min-workers" min="1" max="10" value="2" 
+                    style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 6px; font-size: 14px; transition: border-color 0.3s;"
+                    onfocus="this.style.borderColor='#667eea'" onblur="this.style.borderColor='#e0e0e0'">
+                <div style="font-size: 11px; color: #666; margin-top: 5px;">Recomendado: 1-3</div>
+            </div>
+            
+            <!-- Workers Máximo -->
+            <div style="margin-bottom: 20px;">
+                <label style="display: block; margin-bottom: 8px; font-weight: 600; color: #333; font-size: 14px;">
+                    🚀 Workers Máximo
+                    <span style="color: #999; font-weight: normal; font-size: 12px;" title="Máximo de processamentos paralelos permitidos">(ℹ️)</span>
+                </label>
+                <input type="number" id="config-max-workers" min="1" max="20" value="5" 
+                    style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 6px; font-size: 14px; transition: border-color 0.3s;"
+                    onfocus="this.style.borderColor='#667eea'" onblur="this.style.borderColor='#e0e0e0'">
+                <div style="font-size: 11px; color: #666; margin-top: 5px;">Recomendado: 3-7 (máximo: 10)</div>
+            </div>
+            
+            <!-- Delay -->
+            <div style="margin-bottom: 20px;">
+                <label style="display: block; margin-bottom: 8px; font-weight: 600; color: #333; font-size: 14px;">
+                    ⏱️ Delay entre lotes (ms)
+                    <span style="color: #999; font-weight: normal; font-size: 12px;" title="Tempo de espera entre cada lote de processamento">(ℹ️)</span>
+                </label>
+                <input type="number" id="config-delay" min="0" max="5000" step="100" value="500" 
+                    style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 6px; font-size: 14px; transition: border-color 0.3s;"
+                    onfocus="this.style.borderColor='#667eea'" onblur="this.style.borderColor='#e0e0e0'">
+                <div style="font-size: 11px; color: #666; margin-top: 5px;">Recomendado: 300-1000ms</div>
+            </div>
+            
+            <!-- Registros por Página -->
+            <div style="margin-bottom: 20px;">
+                <label style="display: block; margin-bottom: 8px; font-weight: 600; color: #333; font-size: 14px;">
+                    📄 Registros por Página
+                    <span style="color: #999; font-weight: normal; font-size: 12px;" title="Quantidade de registros a carregar de uma vez">(ℹ️)</span>
+                </label>
+                <select id="config-registros-pagina" 
+                    style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 6px; font-size: 14px; transition: border-color 0.3s; background: white; cursor: pointer;"
+                    onfocus="this.style.borderColor='#667eea'" onblur="this.style.borderColor='#e0e0e0'">
+                    <option value="100">100 registros</option>
+                    <option value="200">200 registros</option>
+                    <option value="500" selected>500 registros (padrão)</option>
+                    <option value="1000">1000 registros</option>
+                </select>
+                <div style="font-size: 11px; color: #666; margin-top: 5px;">Valores maiores = menos recargas, mas tempo de espera maior</div>
+            </div>
+            
+            <!-- Ignorar Histórico -->
+            <div style="margin-bottom: 25px;">
+                <label style="display: block; margin-bottom: 12px; font-weight: 600; color: #333; font-size: 14px;">
+                    🔄 Comportamento de Reprocessamento
+                </label>
+                <div style="background: #f5f5f5; padding: 15px; border-radius: 8px;">
+                    <label style="display: flex; align-items: center; cursor: pointer; margin-bottom: 10px;">
+                        <input type="radio" name="ignorar-historico" value="0" checked 
+                            style="margin-right: 10px; cursor: pointer; width: 18px; height: 18px;">
+                        <div>
+                            <div style="font-weight: 600; color: #333;">✅ Pular IDs já processados</div>
+                            <div style="font-size: 11px; color: #666; margin-top: 3px;">Ignora registros que já foram enviados com sucesso (recomendado)</div>
+                        </div>
+                    </label>
+                    <label style="display: flex; align-items: center; cursor: pointer;">
+                        <input type="radio" name="ignorar-historico" value="1" 
+                            style="margin-right: 10px; cursor: pointer; width: 18px; height: 18px;">
+                        <div>
+                            <div style="font-weight: 600; color: #ff5722;">🔁 Reprocessar tudo</div>
+                            <div style="font-size: 11px; color: #666; margin-top: 3px;">Envia novamente todos os registros, mesmo os já processados</div>
+                        </div>
+                    </label>
+                </div>
+            </div>
+            
+            <!-- Resumo da Memória -->
+            <div id="resumo-memoria" style="margin-bottom: 25px; padding: 15px; background: #e3f2fd; border-radius: 8px; border-left: 4px solid #2196f3;">
+                <div style="font-weight: 600; color: #1565c0; margin-bottom: 8px;">📊 Status da Memória</div>
+                <div style="font-size: 12px; color: #333; line-height: 1.6;">
+                    <div>• <strong>IDs com sucesso:</strong> <span id="mem-sucesso">0</span></div>
+                    <div>• <strong>IDs com tentativas:</strong> <span id="mem-tentativas">0</span></div>
+                    <div>• <strong>IDs pulados:</strong> <span id="mem-pulados">0</span></div>
+                </div>
+            </div>
+            
+            <!-- Botões de Ação -->
+            <div style="display: flex; gap: 10px;">
+                <button id="btn-iniciar-reenvio" 
+                    style="flex: 1; padding: 12px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 15px; transition: transform 0.2s, box-shadow 0.2s; box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);"
+                    onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 16px rgba(102, 126, 234, 0.6)'"
+                    onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 12px rgba(102, 126, 234, 0.4)'">
+                    🚀 Iniciar Reenvio
+                </button>
+                <button id="btn-cancelar-config" 
+                    style="flex: 0.4; padding: 12px; background: #f5f5f5; color: #666; border: 2px solid #e0e0e0; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 15px; transition: all 0.2s;"
+                    onmouseover="this.style.background='#e0e0e0'; this.style.borderColor='#999'"
+                    onmouseout="this.style.background='#f5f5f5'; this.style.borderColor='#e0e0e0'">
+                    Cancelar
+                </button>
+            </div>
+            
+            <!-- Footer -->
+            <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #e0e0e0; text-align: center; font-size: 11px; color: #999;">
+                SPRNDS Reenvio Premium v11.8
+            </div>
+        `;
+        
+        modal.appendChild(conteudo);
+        document.body.appendChild(modal);
+        
+        // Atualizar resumo da memória
+        const stats = obterEstatisticasMemoria();
+        document.getElementById('mem-sucesso').textContent = stats.sucesso;
+        document.getElementById('mem-tentativas').textContent = stats.total;
+        document.getElementById('mem-pulados').textContent = stats.pulados;
+        
+        // Validação em tempo real
+        const minWorkersInput = document.getElementById('config-min-workers');
+        const maxWorkersInput = document.getElementById('config-max-workers');
+        
+        function validarWorkers() {
+            const min = parseInt(minWorkersInput.value);
+            const max = parseInt(maxWorkersInput.value);
+            
+            if (min > max) {
+                maxWorkersInput.style.borderColor = '#f44336';
+                maxWorkersInput.nextElementSibling.style.color = '#f44336';
+                maxWorkersInput.nextElementSibling.textContent = '⚠️ Máximo deve ser >= Mínimo';
+                return false;
+            } else {
+                maxWorkersInput.style.borderColor = '#4caf50';
+                maxWorkersInput.nextElementSibling.style.color = '#666';
+                maxWorkersInput.nextElementSibling.textContent = 'Recomendado: 3-7 (máximo: 10)';
+                return true;
+            }
+        }
+        
+        minWorkersInput.addEventListener('input', validarWorkers);
+        maxWorkersInput.addEventListener('input', validarWorkers);
+        
+        // Event Listeners
+        document.getElementById('btn-fechar-config').addEventListener('click', function() { modal.remove(); });
+        document.getElementById('btn-cancelar-config').addEventListener('click', function() { modal.remove(); });
+        
+        // Fechar ao clicar fora
+        modal.addEventListener('click', function(e) {
+            if (e.target === modal) modal.remove();
+        });
+        
+        // ESC para fechar
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape' && document.getElementById('modal-config-reenvio')) {
+                modal.remove();
+            }
+        });
+        
+        document.getElementById('btn-iniciar-reenvio').addEventListener('click', function() {
+            if (!validarWorkers()) {
+                alert('⚠️ Workers Máximo deve ser maior ou igual ao Mínimo!');
+                return;
+            }
+            
+            const minWorkers = parseInt(document.getElementById('config-min-workers').value);
+            const maxWorkers = parseInt(document.getElementById('config-max-workers').value);
+            const delayMs = parseInt(document.getElementById('config-delay').value);
+            const tamanhoPagina = parseInt(document.getElementById('config-registros-pagina').value);
+            const ignorarHistorico = document.querySelector('input[name="ignorar-historico"]:checked').value === '1';
+            
+            // Validações finais
+            if (maxWorkers > 10) {
+                const confirmar = confirm(
+                    '⚠️ AVISO: Workers máximo muito alto!\n\n' +
+                    'Você configurou: ' + maxWorkers + ' workers\n' +
+                    'Recomendado: 3-7 workers\n\n' +
+                    'Workers altos podem sobrecarregar o servidor.\n\n' +
+                    'Continuar mesmo assim?'
+                );
+                if (!confirmar) return;
+            }
+            
+            modal.remove();
+            carregarDadosPersistentes();
+            reenviarTodos(minWorkers, maxWorkers, delayMs, tamanhoPagina, ignorarHistorico);
+        });
+        
+        // Focar no primeiro campo
+        setTimeout(function() { minWorkersInput.focus(); }, 100);
+    }
+
     // 🔥 FUNÇÃO PRINCIPAL COM ESPERA DINÂMICA (5 MIN)
     async function reenviarTodos(minWorkers, maxWorkers, delayMs, tamanhoPagina, forcarIgnorarHistorico) {
         if (processandoReenvio) {
@@ -1629,28 +1843,8 @@ function adicionarBotaoInterface() {
                     }
                 }
 
-                const config = prompt(
-                    '⚙️ CONFIGURAÇÃO DO REENVIO v11.8\n\n' +
-                    'Digite no formato: MIN_WORKERS,MAX_WORKERS,DELAY_MS,REGISTROS_PAGINA,IGNORAR_HISTORICO\n\n' +
-                    'Exemplo: 2,5,500,500,0\n\n' +
-                    'Ignorar Histórico:\n' +
-                    '  0 = NÃO (pula IDs já processados)\n' +
-                    '  1 = SIM (reprocessa tudo)\n\n' +
-                    'Valores padrão: 2,5,500,500,0',
-                    '2,5,500,500,0'
-                );
-
-                if (config) {
-                    const partes = config.split(',');
-                    const minWorkers = parseInt(partes[0]) || 2;
-                    const maxWorkers = parseInt(partes[1]) || 5;
-                    const delayMs = parseInt(partes[2]) || 500;
-                    const tamanhoPagina = parseInt(partes[3]) || 500;
-                    const ignorarHistorico = partes[4] === '1';
-
-                    carregarDadosPersistentes();
-                    reenviarTodos(minWorkers, maxWorkers, delayMs, tamanhoPagina, ignorarHistorico);
-                }
+                // 🆕 Abre o modal de configuração moderno
+                criarModalConfiguracao();
             });
 
             const btnMemoria = document.createElement('button');
