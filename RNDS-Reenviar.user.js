@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         SPRNDS - Reenviar Premium v11.9 AUTO PAGINATION
+// @name         SPRNDS - Reenviar Premium v11.10 DUAL REQUEST WAIT
 // @namespace    http://tampermonkey.net/
-// @version      11.9
-// @description  Fix loop infinito + Espera dinâmica + Carregamento via dropdown + Auto paginação
+// @version      11.10
+// @description  Aguarda POST + GET antes de continuar + Auto paginação + Espera dinâmica
 // @author       Voce
 // @match        *://*/rnds/vaccine-sync*
 // @grant        GM_notification
@@ -15,7 +15,7 @@
 (function() {
     'use strict';
 
-    console.log('🎯 SPRNDS v11.9 AUTO PAGINATION carregado! 🚀🔄📄');
+    console.log('🎯 SPRNDS v11.10 DUAL REQUEST WAIT carregado! 🚀🔄📡');
 
     let processandoReenvio = false;
     let processosCancelados = false;
@@ -59,6 +59,102 @@
     let paginacaoCarregada = false;
     let registrosPorPagina = 500;
     let ignorarHistoricoSucesso = false;
+
+    // 🆕 v11.10: Sistema de monitoramento de requisições
+    let requisicoesAguardando = new Map();
+    let contadorRequisicoesMonitoradas = 0;
+
+    // 🆕 FUNÇÃO: Instalar interceptor de requisições XHR
+    function instalarInterceptorXHR() {
+        const XHROriginal = window.XMLHttpRequest;
+        const XHROpen = XHROriginal.prototype.open;
+        const XHRSend = XHROriginal.prototype.send;
+
+        XHROriginal.prototype.open = function(method, url) {
+            this._method = method;
+            this._url = url;
+            return XHROpen.apply(this, arguments);
+        };
+
+        XHROriginal.prototype.send = function() {
+            const xhr = this;
+            const method = xhr._method;
+            const url = xhr._url;
+
+            // Monitora apenas requisições da API vaccine-sync
+            if (url && url.includes('/api/vaccine-sync')) {
+                const requestId = ++contadorRequisicoesMonitoradas;
+                const timestamp = Date.now();
+
+                console.log(`[XHR-${requestId}] ${method} ${url}`);
+
+                const onLoadOriginal = xhr.onload;
+                const onErrorOriginal = xhr.onerror;
+
+                xhr.onload = function() {
+                    const duracao = Date.now() - timestamp;
+                    console.log(`[XHR-${requestId}] ✅ Concluído (${duracao}ms)`);
+                    if (onLoadOriginal) onLoadOriginal.apply(this, arguments);
+                };
+
+                xhr.onerror = function() {
+                    const duracao = Date.now() - timestamp;
+                    console.log(`[XHR-${requestId}] ❌ Erro (${duracao}ms)`);
+                    if (onErrorOriginal) onErrorOriginal.apply(this, arguments);
+                };
+            }
+
+            return XHRSend.apply(this, arguments);
+        };
+
+        console.log('✅ Interceptor XHR instalado');
+    }
+
+    // 🆕 FUNÇÃO: Aguarda ambas requisições (POST + GET)
+    async function aguardarAmbasRequisicoes(idVacina, timeoutMs = 20000) {
+        const inicioEspera = Date.now();
+        let postConcluido = false;
+        let getConcluido = false;
+        
+        console.log(`  [${idVacina}] ⏳ Aguardando POST + GET...`);
+
+        // Monitora requisições ativas
+        const checkRequests = () => {
+            const xhrs = performance.getEntriesByType('resource')
+                .filter(r => r.name.includes('/api/vaccine-sync') && r.responseEnd === 0);
+            return xhrs.length;
+        };
+
+        // Loop de espera
+        while (Date.now() - inicioEspera < timeoutMs) {
+            const ativas = checkRequests();
+            
+            // Aguarda um pouco antes de verificar novamente
+            await aguardar(300);
+
+            // Verifica se não há mais requisições ativas
+            if (ativas === 0) {
+                // Aguarda um pouco mais para garantir
+                await aguardar(500);
+                const ativasDepois = checkRequests();
+                
+                if (ativasDepois === 0) {
+                    const tempoTotal = Date.now() - inicioEspera;
+                    console.log(`  [${idVacina}] ✅ Ambas requisições concluídas (${tempoTotal}ms)`);
+                    return true;
+                }
+            }
+
+            // Log de progresso a cada 2 segundos
+            const decorrido = Date.now() - inicioEspera;
+            if (decorrido % 2000 < 300) {
+                console.log(`  [${idVacina}] ⏳ Aguardando... ${Math.floor(decorrido/1000)}s (${ativas} ativas)`);
+            }
+        }
+
+        console.warn(`  [${idVacina}] ⚠️ Timeout após ${timeoutMs}ms`);
+        return false;
+    }
 
     // 🆕 FUNÇÃO: Detectar se há próxima página
     function temProximaPagina() {
@@ -337,7 +433,7 @@
             const url = URL.createObjectURL(blob);
 
             const dataAtual = new Date();
-            const nomeArquivo = 'sprnds_reenvio_v11.9_' +
+            const nomeArquivo = 'sprnds_reenvio_v11.10_' +
                 dataAtual.getFullYear() +
                 String(dataAtual.getMonth() + 1).padStart(2, '0') +
                 String(dataAtual.getDate()).padStart(2, '0') + '_' +
@@ -371,7 +467,7 @@
         }
 
         const stats =
-            '📊 ESTATÍSTICAS DO REENVIO v11.9\n' +
+            '📊 ESTATÍSTICAS DO REENVIO v11.10\n' +
             '═══════════════════════════════════\n' +
             '✅ Sucesso: ' + totalProcessados + '\n' +
             '❌ Erros Total: ' + totalErros + '\n' +
@@ -1064,6 +1160,7 @@
         }
     }
 
+    // 🆕 v11.10: FUNÇÃO MODIFICADA - Aguarda POST + GET
     async function processarRegistro(registro, workerId) {
         const idTexto = registro.id;
         const inicioProcessamento = Date.now();
@@ -1088,7 +1185,7 @@
 
         salvarDadosPersistentes();
 
-        console.log('[W' + workerId + '] Processando ID ' + idTexto + ' (tent. ' + tentativaAtual + ')');
+        console.log('[W' + workerId + '] 📤 Processando ID ' + idTexto + ' (tent. ' + tentativaAtual + ')');
 
         try {
             const clicouOk = clicarBotaoAngular(registro.botao);
@@ -1096,8 +1193,16 @@
                 throw new Error('Nao foi possivel clicar no botao');
             }
 
-            await aguardar(1500);
+            // 🆕 v11.10: Aguarda ambas requisições (POST + GET)
+            console.log('[W' + workerId + '] ⏳ Aguardando POST + GET...');
+            const aguardouRequisicoes = await aguardarAmbasRequisicoes(idTexto, 20000);
+            
+            if (!aguardouRequisicoes) {
+                console.warn('[W' + workerId + '] ⚠️ Timeout nas requisições, verificando diálogo...');
+            }
 
+            // Verifica se houve erro (diálogo)
+            await aguardar(500); // Pequena pausa para diálogo aparecer
             const dialogos = document.querySelectorAll('.nab-dialog-container, mat-dialog-container');
             let dialogoAberto = false;
             let mensagemErro = '';
@@ -1148,7 +1253,7 @@
                 salvarDadosSessao();
                 return { sucesso: false, pulado: false, dialogo: true, id: idTexto, erro: mensagemErro };
             } else {
-                console.log('[W' + workerId + '] ✅ Sucesso ID ' + idTexto);
+                console.log('[W' + workerId + '] ✅ Sucesso ID ' + idTexto + ' (' + tempoProcessamento + 'ms)');
 
                 delete processandoIds[idTexto];
                 delete tentativasPorId[idTexto];
@@ -1170,7 +1275,8 @@
                 totalProcessados++;
                 salvarDadosSessao();
 
-                await aguardar(500);
+                // Pequena pausa antes do próximo
+                await aguardar(300);
 
                 return { sucesso: true, pulado: false, dialogo: false, id: idTexto };
             }
@@ -1204,7 +1310,7 @@
         modal.style.cssText = 'position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 30px; border-radius: 8px; box-shadow: 0 8px 32px rgba(0,0,0,0.3); z-index: 10000; min-width: 550px; max-width: 650px;';
 
         modal.innerHTML =
-            '<h3 style="margin: 0 0 20px 0; color: #333; font-size: 18px;">🎯 Reenvio v11.9 AUTO PAGINATION 🔄</h3>' +
+            '<h3 style="margin: 0 0 20px 0; color: #333; font-size: 18px;">🎯 Reenvio v11.10 DUAL REQUEST 📡</h3>' +
 
             '<div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 12px; border-radius: 6px; margin-bottom: 15px; color: white;">' +
                 '<div style="display: flex; justify-content: space-between; margin-bottom: 5px;">' +
@@ -1215,7 +1321,7 @@
                     '<span style="font-size: 13px;">📄 Páginas Processadas:</span>' +
                     '<span id="paginas-processadas" style="font-weight: bold; font-size: 16px;">0</span>' +
                 '</div>' +
-                '<div style="font-size: 11px; opacity: 0.9;" id="status-adaptacao">Iniciando no mínimo...</div>' +
+                '<div style="font-size: 11px; opacity: 0.9;" id="status-adaptacao">Aguarda POST + GET...</div>' +
             '</div>' +
 
             '<div style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); padding: 15px; border-radius: 6px; margin-bottom: 15px; color: white;">' +
@@ -1346,7 +1452,7 @@
         const statusEl = document.getElementById('status-adaptacao');
         if (statusEl) {
             const ativos = workers.filter(function(w) { return w.processando; }).length;
-            statusEl.textContent = ativos + ' de ' + workersAtual + ' workers ativos';
+            statusEl.textContent = ativos + ' de ' + workersAtual + ' workers ativos (POST+GET)';
         }
 
         let html = '<strong style="margin-bottom: 5px; display: block;">Workers Ativos:</strong>';
@@ -1371,14 +1477,14 @@
         
         conteudo.innerHTML = `
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px;">
-                <h2 style="margin: 0; color: #333; font-size: 22px;">⚙️ Configuração do Reenvio</h2>
+                <h2 style="margin: 0; color: #333; font-size: 22px;">⚙️ Configuração v11.10</h2>
                 <button id="btn-fechar-config" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #999; padding: 0; width: 30px; height: 30px;" title="Fechar">×</button>
             </div>
             
             <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 8px; margin-bottom: 25px;">
                 <div style="font-size: 13px; line-height: 1.6;">
-                    <strong>💡 Dica:</strong> Comece com valores conservadores e ajuste conforme necessário.
-                    <br>Workers altos podem sobrecarregar o servidor!
+                    <strong>🆕 v11.10:</strong> Aguarda POST + GET antes de continuar!
+                    <br>📡 Sincronização completa garantida
                 </div>
             </div>
             
@@ -1488,7 +1594,7 @@
             
             <!-- Footer -->
             <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #e0e0e0; text-align: center; font-size: 11px; color: #999;">
-                SPRNDS Reenvio Premium v11.9 - Auto Pagination
+                SPRNDS Reenvio v11.10 - Dual Request Wait 📡
             </div>
         `;
         
@@ -1621,9 +1727,12 @@
 
         tempoInicioProcesamento = Date.now();
 
-        console.log('🎯 Iniciando v11.9 AUTO PAGINATION: ' + workersMinimo + ' → ' + workersMaximo + ' workers | ' + tamanhoPagina + ' registros/página');
+        console.log('🎯 Iniciando v11.10 DUAL REQUEST: ' + workersMinimo + ' → ' + workersMaximo + ' workers | ' + tamanhoPagina + ' registros/página');
         console.log('🔄 Ignorar histórico de sucessos: ' + (ignorarHistoricoSucesso ? 'SIM' : 'NÃO'));
-        console.log('📄 Navegação automática de páginas: ATIVA');
+        console.log('📡 Aguarda POST + GET antes de continuar');
+
+        // 🆕 v11.10: Instala interceptor XHR
+        instalarInterceptorXHR();
 
         const modal = criarModalProgresso();
 
@@ -1757,7 +1866,7 @@
             });
         }
 
-        // 🆕 LOOP PRINCIPAL COM AUTO-PAGINAÇÃO
+        // LOOP PRINCIPAL COM AUTO-PAGINAÇÃO
         while (true) {
             if (processosCancelados) {
                 console.log('❌ Cancelado pelo usuário');
@@ -1774,7 +1883,7 @@
 
             let disponiveis = contarRegistrosDisponiveis();
 
-            // 🆕 SE NÃO HÁ MAIS REGISTROS NA PÁGINA ATUAL
+            // SE NÃO HÁ MAIS REGISTROS NA PÁGINA ATUAL
             if (disponiveis === 0) {
                 console.log('📄 Não há mais registros na página atual');
                 
@@ -1831,7 +1940,7 @@
             atualizarWorkersStatus(workers);
             const dispAtual = contarRegistrosDisponiveis();
             atualizarProgresso(totalProcessados, dispAtual,
-                'Processando ' + registros.length + ' em paralelo...',
+                'Processando ' + registros.length + ' em paralelo (POST+GET)...',
                 totalDialogosFechados);
 
             const promises = registros.map(function(registro, index) {
@@ -1907,7 +2016,7 @@ function adicionarBotaoInterface() {
 
             const botao = document.createElement('button');
             botao.id = 'btn-reenviar-premium';
-            botao.innerHTML = '🔄 Reenviar Premium v11.9';
+            botao.innerHTML = '📡 Reenviar v11.10';
             botao.style.cssText = 'padding: 8px 16px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 14px; box-shadow: 0 2px 8px rgba(0,0,0,0.2); transition: transform 0.2s;';
 
             botao.addEventListener('mouseenter', function() {
@@ -1981,7 +2090,7 @@ function adicionarBotaoInterface() {
             botaoAdicionado = true;
             clearInterval(intervalo);
 
-            console.log('✅ Botões v11.9 adicionados com sucesso!');
+            console.log('✅ Botões v11.10 adicionados com sucesso!');
             console.log('📍 Local: ' + (container.id || container.className || 'container genérico'));
         }
     }, 1000);
