@@ -1,12 +1,11 @@
 // ==UserScript==
-// @name         SPRNDS - Reenviar Premium v11.11 OVERLAY SUPPRESSOR
+// @name         SPRNDS - Reenviar v13.3.3
 // @namespace    http://tampermonkey.net/
-// @version      11.11
-// @description  Suprime overlays ativos + Aguarda POST + GET + Auto paginação
-// @author       Voce
-// @match        *://*/rnds/vaccine-sync*
-// @grant        GM_notification
-// @run-at       document-end
+// @version      13.3.3
+// @description  Filtro de período de datas + Checkpoint permanente
+// @author       Renato Krebs Rosa
+// @match        *://*/rnds/*
+// @grant        none
 // @updateURL    https://raw.githubusercontent.com/RenatoKR/UserScripts/main/RNDS-Reenviar.user.js
 // @downloadURL  https://raw.githubusercontent.com/RenatoKR/UserScripts/main/RNDS-Reenviar.user.js
 // @supportURL   https://github.com/RenatoKR/UserScripts/issues
@@ -15,2234 +14,1593 @@
 (function() {
     'use strict';
 
-    console.log('🎯 SPRNDS v11.11 OVERLAY SUPPRESSOR carregado! 🚀🔄📡🛡️');
+    // ============================================
+    // ⚙️ CONFIGURAÇÕES PADRÃO
+    // ============================================
+    const CONFIG = {
+        concorrenciaInicial: 15,
+        concorrenciaMaxima: 50,
+        concorrenciaMinima: 5,
+        registrosPorPagina: 15,
+        pausaEntreLotes: 200,
+        timeoutRequisicao: 30000,
+        maxRetentativas: 2,
+        ajusteAutomatico: true,
+        limiteMaximoPaginas: 100,
+        buscarTodasPaginas: true,
+        habilitarCheckpoint: true,
+        salvarCheckpointACada: 10,
+        // ✨ NOVO: Filtro de período de datas
+        habilitarFiltroData: false,
+        dataInicio: '2020-01-01',
+        dataFim: '2026-02-14'
+    };
 
-    let processandoReenvio = false;
-    let processosCancelados = false;
-    let totalProcessados = 0;
-    let totalErros = 0;
-    let totalErrosDados = 0;
-    let totalErrosServidor = 0;
-    let totalPulados = 0;
-    let botaoAdicionado = false;
-    let paginasProcessadas = 0;
+    // ============================================
+    // 💾 GERENCIADOR DE CHECKPOINT PERMANENTE
+    // ============================================
 
-    let tentativasPorId = {};
-    let processandoIds = {};
-    let idsProcessadosComSucesso = {};
-    let idsProcessadosNaSessaoAtual = {};
-    const MAX_TENTATIVAS = 3;
+    class CheckpointManager {
+        constructor() {
+            this.STORAGE_KEY = 'RNDS_CHECKPOINT';
+            this.checkpoint = this.carregar() || this.criar();
+        }
 
-    const STORAGE_KEY = 'sprnds_tentativas_reenvio';
-    const STORAGE_DATA_KEY = 'sprnds_dados_sessao';
-    const STORAGE_SUCESSO_KEY = 'sprnds_ids_sucesso';
-    const STORAGE_URL_KEY = 'sprnds_ultima_url';
+        criar() {
+            console.log('💾 Criando novo checkpoint vazio');
+            return {
+                timestamp: Date.now(),
+                idsSucesso: [],
+                estatisticas: {
+                    totalSucesso: 0,
+                    totalErro: 0,
+                    totalTimeout: 0,
+                    totalRetentativas: 0
+                },
+                versao: '13.3.3',
+                execucoes: []
+            };
+        }
 
-    let historicoDetalhado = [];
-    let tempoInicioProcesamento = null;
-    let velocidadeAtual = 0;
-    let etaMinutos = 0;
-
-    let workersAtual = 1;
-    let workersMinimo = 1;
-    let workersMaximo = 5;
-    let sucessosConsecutivos = 0;
-    let errosConsecutivos = 0;
-    let ultimaAdaptacao = Date.now();
-    let historicoAdaptacoes = [];
-    const INTERVALO_ADAPTACAO = 10000;
-
-    let ultimoIdProcessado = null;
-    let contadorMesmoId = 0;
-    let loopsDetectados = 0;
-
-    let paginacaoCarregada = false;
-    let registrosPorPagina = 500;
-    let ignorarHistoricoSucesso = false;
-
-    let requisicoesAguardando = new Map();
-    let contadorRequisicoesMonitoradas = 0;
-
-    // 🆕 v11.11: Variáveis para supressor de overlay
-    let observerOverlay = null;
-    let intervaloSupressor = null;
-    let overlaysRemovidos = 0;
-
-    // 🆕 v11.11: FUNÇÃO: Instalar supressor ativo de overlays
-    function instalarSupressorOverlay() {
-        console.log('🛡️ Instalando supressor ativo de overlays...');
-
-        // Adiciona CSS customizado para forçar overlays invisíveis
-        const style = document.createElement('style');
-        style.id = 'sprnds-overlay-suppressor';
-        style.textContent = `
-            /* Força spinners e overlays invisíveis */
-            ngx-spinner,
-            .ngx-spinner-overlay,
-            [bdcolor],
-            .cdk-overlay-backdrop:not(.cdk-overlay-backdrop-showing),
-            .mat-drawer-backdrop {
-                display: none !important;
-                visibility: hidden !important;
-                opacity: 0 !important;
-                pointer-events: none !important;
-            }
-            
-            /* Permite apenas overlays de diálogos */
-            .cdk-overlay-backdrop.cdk-overlay-backdrop-showing {
-                /* Mantém visible apenas se for backdrop de diálogo real */
-            }
-        `;
-        document.head.appendChild(style);
-        console.log('  ✅ CSS supressor adicionado');
-
-        // MutationObserver para detectar novos overlays
-        observerOverlay = new MutationObserver(function(mutations) {
-            mutations.forEach(function(mutation) {
-                mutation.addedNodes.forEach(function(node) {
-                    if (node.nodeType === 1) { // Element node
-                        // Verifica se é spinner/overlay
-                        if (node.matches && (
-                            node.matches('ngx-spinner') ||
-                            node.matches('.ngx-spinner-overlay') ||
-                            node.matches('[bdcolor]') ||
-                            node.classList.contains('ngx-spinner-overlay')
-                        )) {
-                            node.style.display = 'none';
-                            node.style.visibility = 'hidden';
-                            node.style.opacity = '0';
-                            overlaysRemovidos++;
-                            console.log('🛡️ Overlay removido automaticamente (#' + overlaysRemovidos + ')');
-                        }
-
-                        // Verifica backdrop que não seja de diálogo
-                        if (node.matches && node.matches('.cdk-overlay-backdrop')) {
-                            const temDialogo = document.querySelector('.nab-dialog-container, mat-dialog-container');
-                            if (!temDialogo) {
-                                node.style.display = 'none';
-                                overlaysRemovidos++;
-                                console.log('🛡️ Backdrop removido (#' + overlaysRemovidos + ')');
-                            }
-                        }
-                    }
-                });
-            });
-        });
-
-        // Observa o body inteiro
-        observerOverlay.observe(document.body, {
-            childList: true,
-            subtree: true
-        });
-
-        console.log('  ✅ MutationObserver instalado');
-
-        // Supressor periódico (fallback)
-        intervaloSupressor = setInterval(function() {
-            if (processandoReenvio) {
-                forcarRemoverOverlays();
-            }
-        }, 500);
-
-        console.log('  ✅ Supressor periódico ativado (500ms)');
-        console.log('✅ Supressor de overlays instalado com sucesso!');
-    }
-
-    // 🆕 v11.11: FUNÇÃO: Força remoção de overlays
-    function forcarRemoverOverlays() {
-        let removidos = 0;
-
-        // Remove spinners
-        const spinners = document.querySelectorAll('ngx-spinner, .ngx-spinner-overlay, [bdcolor]');
-        spinners.forEach(function(spinner) {
-            if (spinner && spinner.style) {
-                spinner.style.display = 'none';
-                spinner.style.visibility = 'hidden';
-                spinner.style.opacity = '0';
-                spinner.style.pointerEvents = 'none';
-                removidos++;
-            }
-        });
-
-        // Remove overlays/backdrops (exceto de diálogos)
-        const temDialogo = document.querySelector('.nab-dialog-container, mat-dialog-container');
-        if (!temDialogo) {
-            const overlays = document.querySelectorAll('.cdk-overlay-backdrop, .mat-drawer-backdrop');
-            overlays.forEach(function(overlay) {
-                if (overlay && overlay.style) {
-                    overlay.style.display = 'none';
-                    overlay.style.pointerEvents = 'none';
-                    removidos++;
+        carregar() {
+            try {
+                const dados = localStorage.getItem(this.STORAGE_KEY);
+                if (dados) {
+                    const checkpoint = JSON.parse(dados);
+                    console.log('💾 Checkpoint carregado:');
+                    console.log(`   • Data: ${new Date(checkpoint.timestamp).toLocaleString()}`);
+                    console.log(`   • IDs com SUCESSO: ${checkpoint.idsSucesso.length}`);
+                    console.log(`   • Execuções anteriores: ${checkpoint.execucoes?.length || 0}`);
+                    return checkpoint;
                 }
-            });
+            } catch (e) {
+                console.warn('⚠️ Erro ao carregar checkpoint:', e);
+            }
+            return null;
         }
 
-        if (removidos > 0) {
-            overlaysRemovidos += removidos;
+        iniciarExecucao() {
+            const execucaoAtual = {
+                timestamp: Date.now(),
+                idsSucesso: [],
+                estatisticas: {
+                    totalSucesso: 0,
+                    totalErro: 0,
+                    totalTimeout: 0,
+                    totalRetentativas: 0
+                }
+            };
+
+            this.checkpoint.execucoes = this.checkpoint.execucoes || [];
+            this.checkpoint.execucoes.push(execucaoAtual);
+            this.execucaoAtual = execucaoAtual;
+
+            console.log('💾 Nova execução iniciada');
+            console.log(`   • IDs já com sucesso (permanentes): ${this.checkpoint.idsSucesso.length}`);
+            this.salvar();
         }
 
-        return removidos;
+        registrarProcessado(id, resultado) {
+            if (!this.checkpoint || !this.execucaoAtual) return;
+
+            if (resultado.status === 'SUCESSO') {
+                if (!this.checkpoint.idsSucesso.includes(id)) {
+                    this.checkpoint.idsSucesso.push(id);
+                    this.checkpoint.estatisticas.totalSucesso++;
+                }
+
+                if (!this.execucaoAtual.idsSucesso.includes(id)) {
+                    this.execucaoAtual.idsSucesso.push(id);
+                    this.execucaoAtual.estatisticas.totalSucesso++;
+                }
+
+                if (this.checkpoint.idsSucesso.length % CONFIG.salvarCheckpointACada === 0) {
+                    this.salvar();
+                }
+
+            } else if (resultado.status === 'TIMEOUT') {
+                this.execucaoAtual.estatisticas.totalTimeout++;
+                this.checkpoint.estatisticas.totalTimeout++;
+            } else {
+                this.execucaoAtual.estatisticas.totalErro++;
+                this.checkpoint.estatisticas.totalErro++;
+            }
+
+            if (resultado.tentativa > 1) {
+                this.execucaoAtual.estatisticas.totalRetentativas++;
+                this.checkpoint.estatisticas.totalRetentativas++;
+            }
+        }
+
+        salvar() {
+            if (!this.checkpoint) return;
+
+            try {
+                this.checkpoint.timestamp = Date.now();
+                localStorage.setItem(this.STORAGE_KEY, JSON.stringify(this.checkpoint));
+                console.log(`💾 Checkpoint salvo: ${this.checkpoint.idsSucesso.length} IDs permanentes com sucesso`);
+            } catch (e) {
+                console.error('❌ Erro ao salvar checkpoint:', e);
+            }
+        }
+
+        jaTemSucesso(id) {
+            return this.checkpoint && this.checkpoint.idsSucesso.includes(id);
+        }
+
+        limpar() {
+            if (confirm(
+                '⚠️ ATENÇÃO: LIMPAR CHECKPOINT PERMANENTE\n\n' +
+                `Você tem ${this.checkpoint.idsSucesso.length} IDs com sucesso salvos.\n\n` +
+                'Ao limpar, TODOS os sucessos anteriores serão perdidos!\n' +
+                'Todos os registros serão processados novamente do zero.\n\n' +
+                'Tem certeza que deseja LIMPAR?'
+            )) {
+                localStorage.removeItem(this.STORAGE_KEY);
+                this.checkpoint = this.criar();
+                console.log('🗑️ Checkpoint limpo - todos os IDs serão reprocessados');
+                alert('✅ Checkpoint limpo com sucesso!\n\nNa próxima execução, todos os registros serão processados.');
+            }
+        }
+
+        getResumo() {
+            if (!this.checkpoint) return null;
+
+            return {
+                dataCheckpoint: new Date(this.checkpoint.timestamp),
+                idsSucesso: this.checkpoint.idsSucesso.length,
+                estatisticas: this.checkpoint.estatisticas,
+                totalExecucoes: this.checkpoint.execucoes?.length || 0
+            };
+        }
+
+        getHistorico() {
+            if (!this.checkpoint || !this.checkpoint.execucoes) return [];
+
+            return this.checkpoint.execucoes.map((exec, idx) => ({
+                numero: idx + 1,
+                data: new Date(exec.timestamp).toLocaleString(),
+                sucessos: exec.idsSucesso.length,
+                erros: exec.estatisticas.totalErro,
+                timeouts: exec.estatisticas.totalTimeout
+            }));
+        }
     }
 
-    // 🆕 v11.11: FUNÇÃO: Desinstalar supressor
-    function desinstalarSupressorOverlay() {
-        if (observerOverlay) {
-            observerOverlay.disconnect();
-            observerOverlay = null;
-            console.log('🛡️ MutationObserver desconectado');
-        }
+    const checkpointManager = new CheckpointManager();
 
-        if (intervaloSupressor) {
-            clearInterval(intervaloSupressor);
-            intervaloSupressor = null;
-            console.log('🛡️ Supressor periódico desativado');
-        }
+    // ============================================
+    // 📊 ESTADO GLOBAL
+    // ============================================
+    let estado = {
+        processando: false,
+        pausado: false,
+        cancelado: false,
+        iniciado: null,
+        concorrenciaAtual: CONFIG.concorrenciaInicial,
+        totalBuscados: 0,
+        totalProcessados: 0,
+        totalPulados: 0,
+        totalSucesso: 0,
+        totalErro: 0,
+        totalTimeout: 0,
+        totalRetentativas: 0,
+        paginaAtual: 0,
+        totalPaginas: 0,
+        tempoMedioPorLote: 0,
+        ultimosTempos: [],
+        registros: [],
+        resultados: []
+    };
 
-        const style = document.getElementById('sprnds-overlay-suppressor');
-        if (style) {
-            style.remove();
-            console.log('🛡️ CSS supressor removido');
-        }
+    let TOKEN_GLOBAL = null;
 
-        console.log('🛡️ Supressor desinstalado - Total removidos: ' + overlaysRemovidos);
-    }
+    // ============================================
+    // 🔑 CAPTURA DE TOKEN
+    // ============================================
 
-    function instalarInterceptorXHR() {
-        const XHROriginal = window.XMLHttpRequest;
-        const XHROpen = XHROriginal.prototype.open;
-        const XHRSend = XHROriginal.prototype.send;
+    function interceptarXHR() {
+        const originalOpen = XMLHttpRequest.prototype.open;
+        const originalSend = XMLHttpRequest.prototype.send;
+        const originalSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
 
-        XHROriginal.prototype.open = function(method, url) {
-            this._method = method;
+        XMLHttpRequest.prototype.open = function(method, url) {
             this._url = url;
-            return XHROpen.apply(this, arguments);
+            this._method = method;
+            this._requestHeaders = {};
+            return originalOpen.apply(this, arguments);
         };
 
-        XHROriginal.prototype.send = function() {
-            const xhr = this;
-            const method = xhr._method;
-            const url = xhr._url;
+        XMLHttpRequest.prototype.setRequestHeader = function(header, value) {
+            this._requestHeaders[header] = value;
 
-            if (url && url.includes('/api/vaccine-sync')) {
-                const requestId = ++contadorRequisicoesMonitoradas;
-                const timestamp = Date.now();
-
-                console.log(`[XHR-${requestId}] ${method} ${url}`);
-
-                const onLoadOriginal = xhr.onload;
-                const onErrorOriginal = xhr.onerror;
-
-                xhr.onload = function() {
-                    const duracao = Date.now() - timestamp;
-                    console.log(`[XHR-${requestId}] ✅ Concluído (${duracao}ms)`);
-                    if (onLoadOriginal) onLoadOriginal.apply(this, arguments);
-                };
-
-                xhr.onerror = function() {
-                    const duracao = Date.now() - timestamp;
-                    console.log(`[XHR-${requestId}] ❌ Erro (${duracao}ms)`);
-                    if (onErrorOriginal) onErrorOriginal.apply(this, arguments);
-                };
+            if (header.toLowerCase() === 'authorization' && value.startsWith('Bearer ')) {
+                TOKEN_GLOBAL = value.replace('Bearer ', '');
+                localStorage.setItem('RNDS_TOKEN', TOKEN_GLOBAL);
+                atualizarBotaoToken(true);
             }
 
-            return XHRSend.apply(this, arguments);
+            return originalSetRequestHeader.apply(this, arguments);
+        };
+
+        XMLHttpRequest.prototype.send = function() {
+            this.addEventListener('load', function() {
+                if (this._requestHeaders && this._requestHeaders['Authorization']) {
+                    const auth = this._requestHeaders['Authorization'];
+                    if (auth.startsWith('Bearer ') && !TOKEN_GLOBAL) {
+                        TOKEN_GLOBAL = auth.replace('Bearer ', '');
+                        localStorage.setItem('RNDS_TOKEN', TOKEN_GLOBAL);
+                        atualizarBotaoToken(true);
+                    }
+                }
+            });
+
+            return originalSend.apply(this, arguments);
         };
 
         console.log('✅ Interceptor XHR instalado');
     }
 
-    async function aguardarAmbasRequisicoes(idVacina, timeoutMs = 20000) {
-        const inicioEspera = Date.now();
-        let postConcluido = false;
-        let getConcluido = false;
-        
-        console.log(`  [${idVacina}] ⏳ Aguardando POST + GET...`);
+    function interceptarFetch() {
+        const originalFetch = window.fetch;
 
-        const checkRequests = () => {
-            const xhrs = performance.getEntriesByType('resource')
-                .filter(r => r.name.includes('/api/vaccine-sync') && r.responseEnd === 0);
-            return xhrs.length;
+        window.fetch = async function(...args) {
+            const [url, options] = args;
+
+            if (options?.headers) {
+                const headers = options.headers;
+
+                if (headers.Authorization && headers.Authorization.startsWith('Bearer ')) {
+                    TOKEN_GLOBAL = headers.Authorization.replace('Bearer ', '');
+                    localStorage.setItem('RNDS_TOKEN', TOKEN_GLOBAL);
+                    atualizarBotaoToken(true);
+                }
+            }
+
+            return await originalFetch.apply(this, args);
         };
 
-        while (Date.now() - inicioEspera < timeoutMs) {
-            const ativas = checkRequests();
-            
-            // 🆕 v11.11: Remove overlays durante a espera
-            forcarRemoverOverlays();
-            
-            await aguardar(300);
-
-            if (ativas === 0) {
-                await aguardar(500);
-                const ativasDepois = checkRequests();
-                
-                if (ativasDepois === 0) {
-                    const tempoTotal = Date.now() - inicioEspera;
-                    console.log(`  [${idVacina}] ✅ Ambas requisições concluídas (${tempoTotal}ms)`);
-                    return true;
-                }
-            }
-
-            const decorrido = Date.now() - inicioEspera;
-            if (decorrido % 2000 < 300) {
-                console.log(`  [${idVacina}] ⏳ Aguardando... ${Math.floor(decorrido/1000)}s (${ativas} ativas)`);
-            }
-        }
-
-        console.warn(`  [${idVacina}] ⚠️ Timeout após ${timeoutMs}ms`);
-        return false;
+        console.log('✅ Interceptor Fetch instalado');
     }
 
-    function temProximaPagina() {
-        const paginador = document.querySelector('mat-paginator');
-        if (!paginador) return false;
+    function tentarLocalStorage() {
+        const possiveisChaves = ['RNDS_TOKEN', 'auth_token', 'token', 'authorization', 'bearer_token', 'access_token'];
 
-        const btnProximo = paginador.querySelector('.mat-paginator-navigation-next:not([disabled])');
-        if (btnProximo) {
-            const disabled = btnProximo.hasAttribute('disabled') || 
-                           btnProximo.getAttribute('aria-disabled') === 'true' ||
-                           btnProximo.classList.contains('mat-button-disabled');
-            return !disabled;
-        }
-
-        return false;
-    }
-
-    async function irParaProximaPagina() {
-        console.log('📄 Mudando para próxima página...');
-        
-        const paginador = document.querySelector('mat-paginator');
-        if (!paginador) {
-            console.error('❌ Paginador não encontrado');
-            return false;
-        }
-
-        const btnProximo = paginador.querySelector('.mat-paginator-navigation-next');
-        if (!btnProximo) {
-            console.error('❌ Botão próxima página não encontrado');
-            return false;
-        }
-
-        if (btnProximo.hasAttribute('disabled') || 
-            btnProximo.getAttribute('aria-disabled') === 'true' ||
-            btnProximo.classList.contains('mat-button-disabled')) {
-            console.log('📄 Última página alcançada');
-            return false;
-        }
-
-        clicarBotaoAngular(btnProximo);
-        await aguardar(2000);
-
-        console.log('⏳ Aguardando nova página carregar...');
-        let tentativas = 0;
-        let linhasComConteudo = 0;
-
-        while (tentativas < 60) {
-            // 🆕 v11.11: Remove overlays durante carregamento
-            forcarRemoverOverlays();
-            
-            const linhas = document.querySelectorAll('mat-row.mat-row');
-            linhasComConteudo = 0;
-
-            linhas.forEach(function(linha) {
-                const idCol = linha.querySelector('.cdk-column-vaccineId');
-                if (idCol && idCol.textContent.trim().length > 0) {
-                    linhasComConteudo++;
-                }
-            });
-
-            if (tentativas % 5 === 0) {
-                console.log(`  [${tentativas}s] Linhas com dados: ${linhasComConteudo}/${linhas.length}`);
-            }
-
-            if (linhasComConteudo >= 10) {
-                console.log('✅ Nova página carregada: ' + linhasComConteudo + ' registros!');
-                paginasProcessadas++;
-                await aguardar(2000);
+        for (const chave of possiveisChaves) {
+            const valor = localStorage.getItem(chave) || sessionStorage.getItem(chave);
+            if (valor && valor.length > 20) {
+                TOKEN_GLOBAL = valor;
+                console.log(`🔑 Token encontrado em storage: ${chave}`);
+                atualizarBotaoToken(true);
                 return true;
             }
-
-            await aguardar(1000);
-            tentativas++;
         }
-
-        console.warn('⚠️ Timeout: apenas ' + linhasComConteudo + ' linhas com dados após 60s');
-        return linhasComConteudo > 0;
-    }
-
-    function detectarNovaSessao() {
-        try {
-            const urlAtual = window.location.href;
-            const ultimaUrl = localStorage.getItem(STORAGE_URL_KEY);
-
-            if (!ultimaUrl || ultimaUrl !== urlAtual) {
-                console.log('🆕 Nova URL detectada!');
-                console.log('  Anterior: ' + (ultimaUrl || 'nenhuma'));
-                console.log('  Atual: ' + urlAtual);
-
-                const stats = obterEstatisticasMemoria();
-                if (stats.sucesso > 0) {
-                    console.log('⚠️ Há ' + stats.sucesso + ' IDs marcados como sucesso na memória');
-                    console.log('💡 Esses IDs podem não estar mais na página atual');
-                    return true;
-                }
-            }
-
-            localStorage.setItem(STORAGE_URL_KEY, urlAtual);
-            return false;
-        } catch (e) {
-            console.warn('Erro ao detectar sessão:', e);
-            return false;
-        }
-    }
-
-    function contarRegistrosReaisNaPagina() {
-        const linhas = document.querySelectorAll('mat-row.mat-row');
-        let total = 0;
-        let comErro = 0;
-
-        linhas.forEach(function(linha) {
-            total++;
-            const statusCell = linha.querySelector('.sendStatus.error, [class*="error"]');
-            if (statusCell) {
-                comErro++;
-            }
-        });
-
-        console.log('📊 Análise da página:');
-        console.log('  Total linhas: ' + total);
-        console.log('  Com erro: ' + comErro);
-
-        return { total: total, comErro: comErro };
-    }
-
-    function verificarIdsNaPagina() {
-        const linhas = document.querySelectorAll('mat-row.mat-row');
-        const idsNaPagina = [];
-        let idsNaMemoria = 0;
-        let idsNaoNaMemoria = 0;
-
-        linhas.forEach(function(linha) {
-            const statusCell = linha.querySelector('.sendStatus.error, [class*="error"]');
-            if (statusCell) {
-                const idVacina = linha.querySelector('.cdk-column-vaccineId');
-                const idTexto = idVacina ? idVacina.textContent.trim() : null;
-
-                if (idTexto) {
-                    idsNaPagina.push(idTexto);
-                    if (idsProcessadosComSucesso[idTexto]) {
-                        idsNaMemoria++;
-                    } else {
-                        idsNaoNaMemoria++;
-                    }
-                }
-            }
-        });
-
-        console.log('🔍 Verificação de IDs:');
-        console.log('  IDs com erro na página: ' + idsNaPagina.length);
-        console.log('  Destes, na memória de sucesso: ' + idsNaMemoria);
-        console.log('  Destes, NÃO na memória: ' + idsNaoNaMemoria);
-
-        if (idsNaMemoria > 0 && idsNaoNaMemoria === 0) {
-            console.log('⚠️ TODOS IDs com erro já foram processados!');
-            console.log('💡 Possível nova sessão ou página diferente');
-            return { todos_ja_processados: true, novos: 0 };
-        }
-
-        return { todos_ja_processados: false, novos: idsNaoNaMemoria };
-    }
-
-    function isErroServidor(mensagemErro) {
-        if (!mensagemErro) return false;
-
-        const msg = mensagemErro.toLowerCase();
-
-        if (msg.includes('429')) return true;
-        if (msg.includes('too many requests')) return true;
-        if (msg.includes('500')) return true;
-        if (msg.includes('502')) return true;
-        if (msg.includes('503')) return true;
-        if (msg.includes('504')) return true;
-        if (msg.includes('timeout')) return true;
-        if (msg.includes('timed out')) return true;
-        if (msg.includes('connection')) return true;
-        if (msg.includes('network')) return true;
-        if (msg.includes('socket')) return true;
-        if (msg.includes('refused')) return true;
-        if (msg.includes('unavailable')) return true;
-        if (msg.includes('overload')) return true;
 
         return false;
     }
 
-    function tocarSomConclusao() {
-        try {
-            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            const beeps = [523.25, 659.25, 783.99];
+    function solicitarTokenManual() {
+        const token = prompt(
+            '🔑 TOKEN NÃO DETECTADO\n\n' +
+            'Passos:\n' +
+            '1. F12 → Network\n' +
+            '2. Faça uma pesquisa\n' +
+            '3. Clique em "/api/vaccine-sync"\n' +
+            '4. Copie o header "Authorization"\n\n' +
+            'Token:'
+        );
 
-            beeps.forEach(function(freq, index) {
-                const oscillator = audioContext.createOscillator();
-                const gainNode = audioContext.createGain();
-
-                oscillator.connect(gainNode);
-                gainNode.connect(audioContext.destination);
-
-                oscillator.frequency.value = freq;
-                oscillator.type = 'sine';
-
-                const startTime = audioContext.currentTime + (index * 0.15);
-                oscillator.start(startTime);
-
-                gainNode.gain.setValueAtTime(0.3, startTime);
-                gainNode.gain.exponentialRampToValueAtTime(0.01, startTime + 0.1);
-
-                oscillator.stop(startTime + 0.1);
-            });
-
-            console.log('🔊 Som de conclusão tocado');
-        } catch (e) {
-            console.warn('Não foi possível tocar som:', e);
-        }
-    }
-
-    function mostrarNotificacao(titulo, mensagem) {
-        try {
-            if ('Notification' in window && Notification.permission === 'granted') {
-                new Notification(titulo, {
-                    body: mensagem,
-                    icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y="75" font-size="75">✅</text></svg>',
-                    requireInteraction: false
-                });
-            } else if ('Notification' in window && Notification.permission !== 'denied') {
-                Notification.requestPermission().then(function(permission) {
-                    if (permission === 'granted') {
-                        mostrarNotificacao(titulo, mensagem);
-                    }
-                });
-            }
-        } catch (e) {
-            console.warn('Notificação não suportada:', e);
-        }
-    }
-
-    function exportarRelatorioCSV() {
-        try {
-            let csv = 'ID,Status,Tentativas,Data_Hora,Mensagem_Erro,Tipo_Erro,Tempo_ms\n';
-
-            historicoDetalhado.forEach(function(item) {
-                const tipoErro = item.erro ? (isErroServidor(item.erro) ? 'Servidor' : 'Dados') : 'N/A';
-                const linha = [
-                    item.id,
-                    item.status,
-                    item.tentativas,
-                    item.dataHora,
-                    '"' + (item.erro || '').replace(/"/g, '""') + '"',
-                    tipoErro,
-                    item.tempoMs || ''
-                ].join(',');
-                csv += linha + '\n';
-            });
-
-            csv += '\n=== RESUMO ===\n';
-            csv += 'Total Processados,' + totalProcessados + '\n';
-            csv += 'Total Erros,' + totalErros + '\n';
-            csv += 'Erros Servidor,' + totalErrosServidor + '\n';
-            csv += 'Erros Dados,' + totalErrosDados + '\n';
-            csv += 'Total Pulados,' + totalPulados + '\n';
-            csv += 'Paginas Processadas,' + paginasProcessadas + '\n';
-            csv += 'Overlays Removidos,' + overlaysRemovidos + '\n';
-            csv += 'Velocidade Media (reg/min),' + velocidadeAtual + '\n';
-            csv += 'Loops Detectados,' + loopsDetectados + '\n';
-            csv += 'Registros Por Pagina,' + registrosPorPagina + '\n';
-            csv += 'Ignorou Historico,' + (ignorarHistoricoSucesso ? 'Sim' : 'Nao') + '\n';
-
-            csv += '\n=== ADAPTACOES ===\n';
-            historicoAdaptacoes.forEach(function(adapt) {
-                csv += adapt.hora + ',' + adapt.motivo + ',' + adapt.de + '->' + adapt.para + '\n';
-            });
-
-            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-            const link = document.createElement('a');
-            const url = URL.createObjectURL(blob);
-
-            const dataAtual = new Date();
-            const nomeArquivo = 'sprnds_reenvio_v11.11_' +
-                dataAtual.getFullYear() +
-                String(dataAtual.getMonth() + 1).padStart(2, '0') +
-                String(dataAtual.getDate()).padStart(2, '0') + '_' +
-                String(dataAtual.getHours()).padStart(2, '0') +
-                String(dataAtual.getMinutes()).padStart(2, '0') +
-                '.csv';
-
-            link.setAttribute('href', url);
-            link.setAttribute('download', nomeArquivo);
-            link.style.visibility = 'hidden';
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-
-            console.log('📄 CSV exportado: ' + nomeArquivo);
-            alert('Relatório exportado com sucesso!\n\n' + historicoDetalhado.length + ' registros\n' + overlaysRemovidos + ' overlays removidos');
-
-        } catch (e) {
-            console.error('Erro ao exportar CSV:', e);
-            alert('Erro ao exportar CSV: ' + e.message);
-        }
-    }
-
-    function copiarEstatisticas() {
-        let adaptacoesTexto = '';
-        if (historicoAdaptacoes.length > 0) {
-            adaptacoesTexto = '\n🤖 Adaptações: ' + historicoAdaptacoes.length + '\n';
-            historicoAdaptacoes.slice(-5).forEach(function(adapt) {
-                adaptacoesTexto += '  ' + adapt.hora + ' - ' + adapt.motivo + ' (' + adapt.de + '→' + adapt.para + ')\n';
-            });
-        }
-
-        const stats =
-            '📊 ESTATÍSTICAS DO REENVIO v11.11\n' +
-            '═══════════════════════════════════\n' +
-            '✅ Sucesso: ' + totalProcessados + '\n' +
-            '❌ Erros Total: ' + totalErros + '\n' +
-            '  ├─ 🖥️ Servidor: ' + totalErrosServidor + '\n' +
-            '  └─ 📋 Dados: ' + totalErrosDados + '\n' +
-            '⏭️ Pulados: ' + totalPulados + '\n' +
-            '📄 Páginas Processadas: ' + paginasProcessadas + '\n' +
-            '🛡️ Overlays Removidos: ' + overlaysRemovidos + '\n' +
-            '🔁 Loops Detectados: ' + loopsDetectados + '\n' +
-            '📄 Registros/Página: ' + registrosPorPagina + '\n' +
-            '🔄 Ignorou Histórico: ' + (ignorarHistoricoSucesso ? 'Sim' : 'Não') + '\n' +
-            '⚡ Velocidade: ' + velocidadeAtual + ' reg/min\n' +
-            '🤖 Workers Final: ' + workersAtual + '\n' +
-            '📝 Total Registros: ' + historicoDetalhado.length + '\n' +
-            '⏱️ Tempo Decorrido: ' + calcularTempoDecorrido() + '\n' +
-            adaptacoesTexto +
-            '📅 Data: ' + new Date().toLocaleString('pt-BR');
-
-        navigator.clipboard.writeText(stats).then(function() {
-            alert('✅ Estatísticas copiadas para área de transferência!');
-            console.log('📋 Stats copiadas');
-        }).catch(function(err) {
-            console.error('Erro ao copiar:', err);
-            const textarea = document.createElement('textarea');
-            textarea.value = stats;
-            document.body.appendChild(textarea);
-            textarea.select();
-            document.execCommand('copy');
-            document.body.removeChild(textarea);
-            alert('✅ Estatísticas copiadas!');
-        });
-    }
-
-    function calcularTempoDecorrido() {
-        if (!tempoInicioProcesamento) return '0s';
-        const segundos = Math.floor((Date.now() - tempoInicioProcesamento) / 1000);
-        const minutos = Math.floor(segundos / 60);
-        const segs = segundos % 60;
-        return minutos > 0 ? minutos + 'min ' + segs + 's' : segundos + 's';
-    }
-
-    function calcularETA(disponiveisRestantes, velocidade) {
-        if (velocidade === 0 || disponiveisRestantes === 0) {
-            etaMinutos = 0;
-            return 'Calculando...';
-        }
-
-        const minutosRestantes = Math.ceil(disponiveisRestantes / velocidade);
-        etaMinutos = minutosRestantes;
-
-        if (minutosRestantes < 1) {
-            return 'Menos de 1 minuto';
-        } else if (minutosRestantes === 1) {
-            return '~1 minuto';
-        } else if (minutosRestantes < 60) {
-            return '~' + minutosRestantes + ' minutos';
-        } else {
-            const horas = Math.floor(minutosRestantes / 60);
-            const mins = minutosRestantes % 60;
-            return '~' + horas + 'h ' + mins + 'min';
-        }
-    }
-
-    function calcularHoraTermino() {
-        if (etaMinutos === 0) return '--:--';
-
-        const agora = new Date();
-        const termino = new Date(agora.getTime() + (etaMinutos * 60000));
-        return String(termino.getHours()).padStart(2, '0') + ':' +
-               String(termino.getMinutes()).padStart(2, '0');
-    }
-
-    function adaptarWorkers(resultados) {
-        const agora = Date.now();
-
-        if (agora - ultimaAdaptacao < INTERVALO_ADAPTACAO) {
-            return;
-        }
-
-        let sucessos = 0;
-        let errosServidor = 0;
-        let errosDados = 0;
-        let erros429 = 0;
-        let erros5xx = 0;
-
-        resultados.forEach(function(res) {
-            if (res.sucesso) {
-                sucessos++;
-            } else {
-                if (isErroServidor(res.erro)) {
-                    errosServidor++;
-                    if (res.erro && res.erro.includes('429')) erros429++;
-                    if (res.erro && (res.erro.includes('500') || res.erro.includes('502') || res.erro.includes('503'))) erros5xx++;
-                } else {
-                    errosDados++;
-                }
-            }
-        });
-
-        const totalRelevante = sucessos + errosServidor;
-
-        if (totalRelevante === 0) {
-            console.log('🧠 Análise: ' + sucessos + ' OK | ' + errosServidor + ' erro servidor | ' + errosDados + ' erro dados');
-            console.log('💡 Todos erros são de DADOS (validação, CPF, etc) - servidor OK, pode aumentar!');
-
-            sucessosConsecutivos++;
-            errosConsecutivos = 0;
-
-            const disponiveis = contarRegistrosDisponiveis();
-            if (sucessosConsecutivos >= 3 && workersAtual < workersMaximo && disponiveis > workersAtual) {
-                const workersAnterior = workersAtual;
-                workersAtual = Math.min(workersMaximo, workersAtual + 1, disponiveis);
-                registrarAdaptacao(workersAnterior, workersAtual,
-                    'Servidor OK (sem erros servidor, só dados)', 100);
-                sucessosConsecutivos = 0;
-            }
-            return;
-        }
-
-        const taxaSucesso = sucessos / totalRelevante;
-        const workersAnterior = workersAtual;
-        let motivo = '';
-
-        console.log('🧠 Análise: ' + sucessos + ' OK | ' + errosServidor + ' erro servidor | ' + errosDados + ' erro dados (ignorado)');
-        console.log('📊 Taxa servidor: ' + Math.round(taxaSucesso * 100) + '% (' + sucessos + '/' + totalRelevante + ')');
-
-        if (erros429 > 0) {
-            workersAtual = Math.max(workersMinimo, Math.floor(workersAtual / 2));
-            motivo = 'Erro 429 (servidor sobrecarregado)';
-            errosConsecutivos = 0;
-            sucessosConsecutivos = 0;
-        }
-        else if (erros5xx >= 2) {
-            workersAtual = Math.max(workersMinimo, workersAtual - 1);
-            motivo = 'Erros 5xx (servidor instável)';
-            errosConsecutivos++;
-            sucessosConsecutivos = 0;
-        }
-        else if (taxaSucesso < 0.5) {
-            workersAtual = Math.max(workersMinimo, workersAtual - 1);
-            motivo = 'Taxa servidor baixa (' + Math.round(taxaSucesso * 100) + '%)';
-            errosConsecutivos++;
-            sucessosConsecutivos = 0;
-        }
-        else if (taxaSucesso === 1.0) {
-            sucessosConsecutivos++;
-            errosConsecutivos = 0;
-
-            if (sucessosConsecutivos >= 3) {
-                const disponiveis = contarRegistrosDisponiveis();
-                if (workersAtual < workersMaximo && disponiveis > workersAtual) {
-                    workersAtual = Math.min(workersMaximo, workersAtual + 1, disponiveis);
-                    motivo = '100% sucesso servidor (3x consecutivo)';
-                    sucessosConsecutivos = 0;
-                }
-            }
-        }
-        else if (taxaSucesso >= 0.8) {
-            sucessosConsecutivos++;
-            errosConsecutivos = 0;
-            motivo = 'Mantido (taxa servidor boa: ' + Math.round(taxaSucesso * 100) + '%)';
-        }
-
-        if (workersAnterior !== workersAtual && motivo) {
-            registrarAdaptacao(workersAnterior, workersAtual, motivo, Math.round(taxaSucesso * 100));
-        }
-    }
-
-    function registrarAdaptacao(de, para, motivo, taxaSucesso) {
-        ultimaAdaptacao = Date.now();
-        const agora_obj = new Date();
-        const hora = String(agora_obj.getHours()).padStart(2, '0') + ':' +
-                    String(agora_obj.getMinutes()).padStart(2, '0') + ':' +
-                    String(agora_obj.getSeconds()).padStart(2, '0');
-
-        const adaptacao = {
-            hora: hora,
-            de: de,
-            para: para,
-            motivo: motivo,
-            taxaSucesso: taxaSucesso
-        };
-
-        historicoAdaptacoes.push(adaptacao);
-
-        const emoji = para > de ? '🚀' : '⚠️';
-        console.log(emoji + ' ADAPTADO: ' + de + ' → ' + para + ' workers (' + motivo + ')');
-
-        atualizarHistoricoAdaptacoes();
-    }
-
-    function atualizarHistoricoAdaptacoes() {
-        const historico = document.getElementById('historico-adaptacoes');
-        if (!historico) return;
-
-        if (historicoAdaptacoes.length === 0) {
-            historico.innerHTML = '<em style="color: #999;">Nenhuma adaptação ainda</em>';
-            return;
-        }
-
-        let html = '';
-        const ultimas5 = historicoAdaptacoes.slice(-5).reverse();
-
-        ultimas5.forEach(function(adapt) {
-            const emoji = adapt.para > adapt.de ? '🚀' : '⚠️';
-            const cor = adapt.para > adapt.de ? '#4caf50' : '#ff9800';
-            html += '<div style="font-size: 11px; margin-bottom: 3px; color: ' + cor + ';">' +
-                    emoji + ' ' + adapt.hora + ' - ' + adapt.de + '→' + adapt.para + ' (' + adapt.motivo + ')' +
-                    '</div>';
-        });
-
-        historico.innerHTML = html;
-    }
-
-    function aguardar(ms) {
-        return new Promise(function(resolve) {
-            setTimeout(resolve, ms);
-        });
-    }
-
-    function clicarBotaoAngular(botao) {
-        try {
-            botao.click();
-
-            const eventoClick = new MouseEvent('click', {
-                bubbles: true,
-                cancelable: true,
-                composed: true
-            });
-            botao.dispatchEvent(eventoClick);
-
-            try {
-                botao.focus();
-                const eventoEnter = new KeyboardEvent('keydown', {
-                    key: 'Enter',
-                    code: 'Enter',
-                    keyCode: 13,
-                    bubbles: true,
-                    cancelable: true
-                });
-                botao.dispatchEvent(eventoEnter);
-            } catch (e) {}
-
+        if (token) {
+            TOKEN_GLOBAL = token.replace('Bearer ', '').trim();
+            localStorage.setItem('RNDS_TOKEN', TOKEN_GLOBAL);
+            console.log('🔑 Token fornecido manualmente!');
+            atualizarBotaoToken(true);
             return true;
-        } catch (erro) {
-            console.error('Erro ao clicar:', erro);
-            try {
-                botao.click();
-                return true;
-            } catch (e2) {
-                console.error('Fallback também falhou:', e2);
-                return false;
-            }
-        }
-    }
-
-    function tentarFecharDialogosErro() {
-        const seletores = [
-            '.nab-dialog-container button[mat-dialog-close]',
-            'mat-dialog-container button[mat-dialog-close]',
-            '.cdk-overlay-container button[mat-dialog-close]'
-        ];
-
-        let mensagemErro = '';
-        const dialogos = document.querySelectorAll('.nab-dialog-container, mat-dialog-container');
-        if (dialogos.length > 0) {
-            mensagemErro = dialogos[0].textContent.substring(0, 100);
         }
 
-        for (let i = 0; i < seletores.length; i++) {
-            try {
-                const botoes = document.querySelectorAll(seletores[i]);
-                for (let j = 0; j < botoes.length; j++) {
-                    clicarBotaoAngular(botoes[j]);
-                }
-                if (botoes.length > 0) return mensagemErro;
-            } catch (e) {}
-        }
-
-        const todosDialogos = document.querySelectorAll('.nab-dialog-container, mat-dialog-container');
-        for (let i = 0; i < todosDialogos.length; i++) {
-            const dialogo = todosDialogos[i];
-            const botoes = dialogo.querySelectorAll('button');
-
-            for (let j = 0; j < botoes.length; j++) {
-                const botao = botoes[j];
-                const texto = botao.textContent.toLowerCase().trim();
-
-                if (texto === 'fechar' || texto === 'ok' || texto === 'x') {
-                    clicarBotaoAngular(botao);
-                    return mensagemErro;
-                }
-            }
-        }
-
-        return mensagemErro;
-    }
-
-    async function aguardarDialogoFechar(maxTentativas) {
-        for (let i = 0; i < maxTentativas; i++) {
-            const dialogoAberto = document.querySelector('.nab-dialog-container, mat-dialog-container');
-            if (!dialogoAberto) return true;
-            try { tentarFecharDialogosErro(); } catch (e) {}
-            await aguardar(300);
-        }
         return false;
     }
 
-    function carregarDadosPersistentes() {
+    function capturarToken() {
+        console.log('🎯 Iniciando captura de token...');
+        interceptarXHR();
+        interceptarFetch();
+
+        if (tentarLocalStorage()) {
+            return;
+        }
+
+        console.log('💡 Aguardando requisições...');
+    }
+
+    function atualizarBotaoToken(capturado) {
+        const botaoToken = document.getElementById('btnVerToken');
+        if (botaoToken) {
+            const icon = botaoToken.querySelector('span.icon-emoji');
+            if (icon) {
+                icon.style.color = capturado ? '#4caf50' : '#ff9800';
+                botaoToken.title = capturado ? 'Token capturado!' : 'Token não capturado';
+            }
+        }
+    }
+
+    // ============================================
+    // 🌐 API - PAGINAÇÃO COM FILTRO DE DATA
+    // ============================================
+
+    async function buscarVacinasComErro(page = 0, limit = 15) {
+        // ✨ Monta URL com filtro de data opcional
+        let url = `/rnds/api/vaccine-sync?sort=false:desc&page=${page}&limit=${limit}&sendStatus=ERROR`;
+
+        // Adiciona filtro de período se habilitado
+        if (CONFIG.habilitarFiltroData) {
+            url += `&between=vaccineDate,${CONFIG.dataInicio},${CONFIG.dataFim}`;
+        }
+
+        console.log(`🔍 Buscando página ${page}...`);
+        if (CONFIG.habilitarFiltroData) {
+            console.log(`   📅 Período: ${CONFIG.dataInicio} até ${CONFIG.dataFim}`);
+        }
+
         try {
-            const dados = localStorage.getItem(STORAGE_KEY);
-            if (dados) {
-                tentativasPorId = JSON.parse(dados);
-                const totalIds = Object.keys(tentativasPorId).length;
-                console.log('📂 Carregados ' + totalIds + ' registros da memoria');
-
-                let pulados = 0;
-                Object.keys(tentativasPorId).forEach(function(id) {
-                    if (tentativasPorId[id] >= MAX_TENTATIVAS) {
-                        pulados++;
-                    }
-                });
-
-                if (pulados > 0) {
-                    console.log('⏭️ ' + pulados + ' registros ja foram pulados anteriormente');
+            const response = await fetch(url, {
+                headers: {
+                    'Accept': 'application/json, text/plain, */*',
+                    'Accept-Encoding': 'gzip, deflate, br, zstd',
+                    'Authorization': `Bearer ${TOKEN_GLOBAL}`,
+                    'Cache-Control': 'no-cache',
+                    'accept-language': 'pt-BR',
+                    'DNT': '1',
+                    'Pragma': 'no-cache'
                 }
+            });
 
-                return true;
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
             }
 
-            const dadosSucesso = localStorage.getItem(STORAGE_SUCESSO_KEY);
-            if (dadosSucesso) {
-                idsProcessadosComSucesso = JSON.parse(dadosSucesso);
-                console.log('✅ ' + Object.keys(idsProcessadosComSucesso).length + ' IDs com sucesso anterior');
+            const dados = await response.json();
+
+            let registros = [];
+            let totalElementos = 0;
+            let totalPaginas = 0;
+
+            if (dados.content && Array.isArray(dados.content)) {
+                registros = dados.content;
+                totalElementos = dados.totalElements || 0;
+                totalPaginas = dados.totalPages || 0;
+            } else if (dados.data && Array.isArray(dados.data)) {
+                registros = dados.data;
+                totalElementos = dados.total || dados.totalElements || 0;
+                totalPaginas = dados.totalPages || 0;
+            } else if (Array.isArray(dados)) {
+                registros = dados;
+                totalElementos = 0;
+                totalPaginas = 0;
             }
-        } catch (e) {
-            console.warn('Erro ao carregar dados:', e);
-        }
-        return false;
-    }
 
-    function salvarDadosPersistentes() {
-        try {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(tentativasPorId));
-            localStorage.setItem(STORAGE_SUCESSO_KEY, JSON.stringify(idsProcessadosComSucesso));
-        } catch (e) {
-            console.warn('Erro ao salvar dados:', e);
-        }
-    }
-
-    function carregarDadosSessao() {
-        try {
-            const dados = localStorage.getItem(STORAGE_DATA_KEY);
-            if (dados) {
-                const sessao = JSON.parse(dados);
-                totalProcessados = sessao.processados || 0;
-                totalErros = sessao.erros || 0;
-                totalErrosDados = sessao.errosDados || 0;
-                totalErrosServidor = sessao.errosServidor || 0;
-                totalPulados = sessao.pulados || 0;
-                loopsDetectados = sessao.loops || 0;
-                console.log('📊 Sessao anterior: ' + totalProcessados + ' processados');
-                return true;
+            console.log(`   ✅ ${registros.length} registros retornados`);
+            if (totalElementos > 0) {
+                console.log(`   📊 Total na base: ${totalElementos} registros`);
             }
-        } catch (e) {}
-        return false;
-    }
+            if (totalPaginas > 0) {
+                console.log(`   📄 Total de páginas: ${totalPaginas}`);
+            }
 
-    function salvarDadosSessao() {
-        try {
-            const sessao = {
-                processados: totalProcessados,
-                erros: totalErros,
-                errosDados: totalErrosDados,
-                errosServidor: totalErrosServidor,
-                pulados: totalPulados,
-                loops: loopsDetectados,
-                timestamp: Date.now()
+            return {
+                content: registros,
+                totalElements: totalElementos,
+                totalPages: totalPaginas,
+                currentPage: page
             };
-            localStorage.setItem(STORAGE_DATA_KEY, JSON.stringify(sessao));
-        } catch (e) {}
-    }
-
-    function limparMemoria() {
-        if (confirm('🗑️ Limpar memoria de tentativas?\n\nIsso resetara o contador de falhas de TODOS os registros.\n\nContinuar?')) {
-            localStorage.removeItem(STORAGE_KEY);
-            localStorage.removeItem(STORAGE_DATA_KEY);
-            localStorage.removeItem(STORAGE_SUCESSO_KEY);
-            localStorage.removeItem(STORAGE_URL_KEY);
-            tentativasPorId = {};
-            idsProcessadosComSucesso = {};
-            totalProcessados = 0;
-            totalErros = 0;
-            totalErrosDados = 0;
-            totalErrosServidor = 0;
-            totalPulados = 0;
-            loopsDetectados = 0;
-            historicoDetalhado = [];
-            alert('✅ Memoria limpa com sucesso!\n\nProxima execucao comecara do zero.');
-            console.log('🗑️ Memoria limpa');
-            location.reload();
-        }
-    }
-
-    function limparApenasHistoricoSucesso() {
-        const stats = obterEstatisticasMemoria();
-        if (confirm('🔄 Limpar apenas histórico de SUCESSOS?\n\n' +
-                    'IDs com sucesso: ' + stats.sucesso + '\n' +
-                    'IDs com tentativas: ' + stats.total + ' (mantidos)\n\n' +
-                    'Isso permite reprocessar registros que já foram enviados.\n\n' +
-                    'Continuar?')) {
-            localStorage.removeItem(STORAGE_SUCESSO_KEY);
-            idsProcessadosComSucesso = {};
-            alert('✅ Histórico de sucessos limpo!\n\n' +
-                  'Agora você pode reprocessar todos os registros novamente.');
-            console.log('🔄 Histórico de sucessos limpo (' + stats.sucesso + ' IDs)');
-            location.reload();
-        }
-    }
-
-    function obterEstatisticasMemoria() {
-        const total = Object.keys(tentativasPorId).length;
-        let tent1 = 0, tent2 = 0, pulados = 0;
-
-        Object.keys(tentativasPorId).forEach(function(id) {
-            const tent = tentativasPorId[id];
-            if (tent === 1) tent1++;
-            else if (tent === 2) tent2++;
-            else if (tent >= 3) pulados++;
-        });
-
-        return {
-            total: total,
-            tentativa1: tent1,
-            tentativa2: tent2,
-            pulados: pulados,
-            sucesso: Object.keys(idsProcessadosComSucesso).length
-        };
-    }
-
-    function obterProximosRegistros(quantidade) {
-        const linhas = document.querySelectorAll('mat-row.mat-row');
-        const registros = [];
-
-        for (let i = 0; i < linhas.length && registros.length < quantidade; i++) {
-            const linha = linhas[i];
-            const statusCell = linha.querySelector('.sendStatus.error, [class*="error"]');
-
-            if (statusCell) {
-                const celulAcoes = linha.querySelector('.cdk-column-actions');
-                if (celulAcoes) {
-                    const todosBotoes = celulAcoes.querySelectorAll('button');
-                    if (todosBotoes.length >= 2) {
-                        const idVacina = linha.querySelector('.cdk-column-vaccineId');
-                        const idTexto = idVacina ? idVacina.textContent.trim() : 'ID_' + i;
-
-                        if (idsProcessadosNaSessaoAtual[idTexto]) {
-                            continue;
-                        }
-
-                        if (!ignorarHistoricoSucesso && idsProcessadosComSucesso[idTexto]) {
-                            continue;
-                        }
-
-                        const tentativas = tentativasPorId[idTexto] || 0;
-                        const jaProcessando = processandoIds[idTexto];
-
-                        if (tentativas >= MAX_TENTATIVAS || jaProcessando) {
-                            continue;
-                        }
-
-                        registros.push({
-                            botao: todosBotoes[1],
-                            linha: linha,
-                            id: idTexto,
-                            tentativas: tentativas
-                        });
-                    }
-                }
-            }
-        }
-
-        return registros;
-    }
-
-    function contarRegistrosDisponiveis() {
-        const linhas = document.querySelectorAll('mat-row.mat-row');
-        let disponiveis = 0;
-
-        linhas.forEach(function(linha) {
-            const statusCell = linha.querySelector('.sendStatus.error, [class*="error"]');
-            if (statusCell) {
-                const idVacina = linha.querySelector('.cdk-column-vaccineId');
-                const idTexto = idVacina ? idVacina.textContent.trim() : 'ID_desconhecido';
-
-                if (idsProcessadosNaSessaoAtual[idTexto]) {
-                    return;
-                }
-
-                if (!ignorarHistoricoSucesso && idsProcessadosComSucesso[idTexto]) {
-                    return;
-                }
-
-                const tentativas = tentativasPorId[idTexto] || 0;
-                const jaProcessando = processandoIds[idTexto];
-
-                if (tentativas < MAX_TENTATIVAS && !jaProcessando) {
-                    disponiveis++;
-                }
-            }
-        });
-
-        return disponiveis;
-    }
-
-    // 🗑️ Função antiga (substituída por forcarRemoverOverlays)
-    function forcarFecharSpinner() {
-        forcarRemoverOverlays();
-    }
-
-    async function carregarPaginacaoUnica(tamanhoPagina) {
-        console.log('📄 Carregando paginação via DROPDOWN: ' + tamanhoPagina + ' registros...');
-
-        const paginador = document.querySelector('mat-paginator');
-        if (!paginador) {
-            console.error('❌ Paginador não encontrado');
-            return false;
-        }
-
-        try {
-            const selectPageSize = paginador.querySelector('.mat-select, mat-select');
-
-            if (selectPageSize) {
-                console.log('✅ Dropdown encontrado, abrindo...');
-
-                clicarBotaoAngular(selectPageSize);
-                await aguardar(800);
-
-                const opcoes = document.querySelectorAll('.mat-option, mat-select-panel .mat-option-text, .mat-option .mat-option-text');
-                let opcaoEncontrada = null;
-
-                for (let i = 0; i < opcoes.length; i++) {
-                    const opcaoElement = opcoes[i].closest('.mat-option') || opcoes[i];
-                    const texto = opcaoElement.textContent.trim();
-                    const numero = parseInt(texto);
-
-                    console.log('  Opção disponível: ' + texto);
-
-                    if (!isNaN(numero) && (numero === tamanhoPagina || (numero > tamanhoPagina / 2 && !opcaoEncontrada))) {
-                        opcaoEncontrada = opcaoElement;
-                        if (numero === tamanhoPagina) break;
-                    }
-                }
-
-                if (opcaoEncontrada) {
-                    console.log('✅ Clicando na opção: ' + opcaoEncontrada.textContent.trim());
-                    clicarBotaoAngular(opcaoEncontrada);
-                    await aguardar(2000);
-
-                    console.log('⏳ Aguardando dados carregarem...');
-                    let tentativas = 0;
-                    let linhasComConteudo = 0;
-
-                    while (tentativas < 60) {
-                        // 🆕 v11.11: Remove overlays durante carregamento
-                        forcarRemoverOverlays();
-                        
-                        const linhas = document.querySelectorAll('mat-row.mat-row');
-                        linhasComConteudo = 0;
-
-                        linhas.forEach(function(linha) {
-                            const idCol = linha.querySelector('.cdk-column-vaccineId');
-                            if (idCol && idCol.textContent.trim().length > 0) {
-                                linhasComConteudo++;
-                            }
-                        });
-
-                        if (tentativas % 5 === 0) {
-                            console.log(`  [${tentativas}s] Linhas com dados: ${linhasComConteudo}/${linhas.length}`);
-                        }
-
-                        if (linhasComConteudo >= 10) {
-                            console.log('✅ Dados carregados: ' + linhasComConteudo + ' registros com conteúdo!');
-                            await aguardar(1000);
-                            return true;
-                        }
-
-                        await aguardar(1000);
-                        tentativas++;
-                    }
-
-                    console.warn('⚠️ Timeout: apenas ' + linhasComConteudo + ' linhas com dados após 60s');
-                    return linhasComConteudo > 0;
-                } else {
-                    console.error('❌ Opção ' + tamanhoPagina + ' não encontrada no dropdown');
-                }
-            }
-
-            console.warn('⚠️ Dropdown não encontrado, tentando método alternativo...');
-
-            const chaveAngular = Object.keys(paginador).find(function(k) {
-                return k.startsWith('__ngContext__');
-            });
-
-            if (!chaveAngular) {
-                console.error('❌ Contexto Angular não encontrado');
-                return false;
-            }
-
-            const contexto = paginador[chaveAngular];
-            let componentePaginador = null;
-
-            if (Array.isArray(contexto)) {
-                for (let i = 0; i < contexto.length; i++) {
-                    const item = contexto[i];
-                    if (item && item._pageSize !== undefined) {
-                        componentePaginador = item;
-                        break;
-                    }
-                }
-            }
-
-            if (!componentePaginador) {
-                console.error('❌ Componente paginador não encontrado');
-                return false;
-            }
-
-            const totalRegistros = componentePaginador.length || 0;
-            const tamanhoFinal = Math.min(totalRegistros, tamanhoPagina);
-
-            console.log('📊 Total: ' + totalRegistros + ' | Configurando: ' + tamanhoFinal);
-
-            componentePaginador._pageSize = tamanhoFinal;
-            componentePaginador.pageSize = tamanhoFinal;
-            componentePaginador.pageIndex = 0;
-            componentePaginador._changePageSize(tamanhoFinal);
-
-            if (componentePaginador.page) {
-                componentePaginador.page.emit({
-                    pageIndex: 0,
-                    pageSize: tamanhoFinal,
-                    length: componentePaginador.length
-                });
-            }
-
-            await aguardar(3000);
-
-            let tentativas = 0;
-            let linhasComConteudo = 0;
-
-            while (tentativas < 30) {
-                // 🆕 v11.11: Remove overlays durante carregamento
-                forcarRemoverOverlays();
-                
-                const linhas = document.querySelectorAll('mat-row.mat-row');
-                linhasComConteudo = 0;
-
-                linhas.forEach(function(linha) {
-                    const idCol = linha.querySelector('.cdk-column-vaccineId');
-                    if (idCol && idCol.textContent.trim().length > 0) {
-                        linhasComConteudo++;
-                    }
-                });
-
-                if (tentativas % 5 === 0) {
-                    console.log(`  [Fallback ${tentativas}] Linhas com dados: ${linhasComConteudo}/${linhas.length}`);
-                }
-
-                if (linhasComConteudo >= 10) {
-                    console.log('✅ Dados carregados (fallback): ' + linhasComConteudo + ' registros!');
-                    return true;
-                }
-
-                await aguardar(1000);
-                tentativas++;
-            }
-
-            console.warn('⚠️ Fallback timeout: ' + linhasComConteudo + ' linhas com dados');
-            return linhasComConteudo > 0;
 
         } catch (erro) {
-            console.error('❌ Erro ao carregar paginação:', erro);
-            return false;
+            console.error(`❌ Erro ao buscar página ${page}:`, erro);
+            return {
+                content: [],
+                totalElements: 0,
+                totalPages: 0,
+                currentPage: page
+            };
         }
     }
 
-    async function processarRegistro(registro, workerId) {
-        const idTexto = registro.id;
-        const inicioProcessamento = Date.now();
+    async function buscarTodasPaginas() {
+        console.log('');
+        console.log('═══════════════════════════════════════════════════════════');
+        console.log('📄 INICIANDO BUSCA PAGINADA');
+        console.log('═══════════════════════════════════════════════════════════');
+        console.log('📌 Estratégia: Replicar comportamento da aplicação web');
+        console.log(`📌 Limite por página: ${CONFIG.registrosPorPagina} registros`);
 
-        if (idTexto === ultimoIdProcessado) {
-            contadorMesmoId++;
-            if (contadorMesmoId > 3) {
-                console.log('🔁 LOOP detectado no ID ' + idTexto + ' (' + contadorMesmoId + 'x) - Aguardando 5s...');
-                loopsDetectados++;
-                salvarDadosSessao();
-                await aguardar(5000);
-                contadorMesmoId = 0;
-            }
+        if (CONFIG.habilitarFiltroData) {
+            console.log(`📅 Filtro de período: ${CONFIG.dataInicio} até ${CONFIG.dataFim}`);
         } else {
-            ultimoIdProcessado = idTexto;
-            contadorMesmoId = 1;
+            console.log('📅 Sem filtro de período (buscando todos)');
         }
 
-        processandoIds[idTexto] = true;
-        tentativasPorId[idTexto] = (tentativasPorId[idTexto] || 0) + 1;
-        const tentativaAtual = tentativasPorId[idTexto];
-
-        salvarDadosPersistentes();
-
-        console.log('[W' + workerId + '] 📤 Processando ID ' + idTexto + ' (tent. ' + tentativaAtual + ')');
-
-        try {
-            const clicouOk = clicarBotaoAngular(registro.botao);
-            if (!clicouOk) {
-                throw new Error('Nao foi possivel clicar no botao');
-            }
-
-            console.log('[W' + workerId + '] ⏳ Aguardando POST + GET...');
-            const aguardouRequisicoes = await aguardarAmbasRequisicoes(idTexto, 20000);
-            
-            if (!aguardouRequisicoes) {
-                console.warn('[W' + workerId + '] ⚠️ Timeout nas requisições, verificando diálogo...');
-            }
-
-            await aguardar(500);
-            const dialogos = document.querySelectorAll('.nab-dialog-container, mat-dialog-container');
-            let dialogoAberto = false;
-            let mensagemErro = '';
-
-            for (let i = 0; i < dialogos.length; i++) {
-                const textoDialogo = dialogos[i].textContent || '';
-                if (textoDialogo.includes(idTexto) || dialogos.length === 1) {
-                    dialogoAberto = true;
-                    mensagemErro = tentarFecharDialogosErro();
-                    break;
-                }
-            }
-
-            const tempoProcessamento = Date.now() - inicioProcessamento;
-            const dataHora = new Date().toISOString();
-
-            if (dialogoAberto) {
-                console.log('[W' + workerId + '] ❌ Erro em ID ' + idTexto);
-                await aguardarDialogoFechar(6);
-
-                delete processandoIds[idTexto];
-
-                const ehErroServidor = isErroServidor(mensagemErro);
-                if (ehErroServidor) {
-                    totalErrosServidor++;
-                    console.log('  └─ 🖥️ Erro de SERVIDOR detectado');
-                } else {
-                    totalErrosDados++;
-                    console.log('  └─ 📋 Erro de DADOS detectado (validação/CPF/etc)');
-                }
-
-                historicoDetalhado.push({
-                    id: idTexto,
-                    status: tentativaAtual >= MAX_TENTATIVAS ? 'Pulado' : 'Erro',
-                    tentativas: tentativaAtual,
-                    dataHora: dataHora,
-                    erro: mensagemErro,
-                    tempoMs: tempoProcessamento
-                });
-
-                if (tentativaAtual >= MAX_TENTATIVAS) {
-                    totalPulados++;
-                    salvarDadosSessao();
-                    return { sucesso: false, pulado: true, dialogo: true, id: idTexto, erro: mensagemErro };
-                }
-
-                totalErros++;
-                salvarDadosSessao();
-                return { sucesso: false, pulado: false, dialogo: true, id: idTexto, erro: mensagemErro };
-            } else {
-                console.log('[W' + workerId + '] ✅ Sucesso ID ' + idTexto + ' (' + tempoProcessamento + 'ms)');
-
-                delete processandoIds[idTexto];
-                delete tentativasPorId[idTexto];
-
-                idsProcessadosComSucesso[idTexto] = true;
-                idsProcessadosNaSessaoAtual[idTexto] = true;
-
-                salvarDadosPersistentes();
-
-                historicoDetalhado.push({
-                    id: idTexto,
-                    status: 'Sucesso',
-                    tentativas: tentativaAtual,
-                    dataHora: dataHora,
-                    erro: '',
-                    tempoMs: tempoProcessamento
-                });
-
-                totalProcessados++;
-                salvarDadosSessao();
-
-                await aguardar(300);
-
-                return { sucesso: true, pulado: false, dialogo: false, id: idTexto };
-            }
-
-        } catch (erro) {
-            console.error('[W' + workerId + '] Erro:', erro);
-            delete processandoIds[idTexto];
-            tentativasPorId[idTexto] = MAX_TENTATIVAS;
-            salvarDadosPersistentes();
-
-            const tempoProcessamento = Date.now() - inicioProcessamento;
-            historicoDetalhado.push({
-                id: idTexto,
-                status: 'Erro Exceção',
-                tentativas: tentativaAtual,
-                dataHora: new Date().toISOString(),
-                erro: erro.message,
-                tempoMs: tempoProcessamento
-            });
-
-            totalErros++;
-            totalErrosServidor++;
-            salvarDadosSessao();
-            return { sucesso: false, pulado: false, dialogo: false, erro: erro.message, id: idTexto };
-        }
-    }
-
-    function criarModalProgresso() {
-        const modal = document.createElement('div');
-        modal.id = 'modal-reenvio-progresso';
-        modal.style.cssText = 'position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 30px; border-radius: 8px; box-shadow: 0 8px 32px rgba(0,0,0,0.3); z-index: 10000; min-width: 550px; max-width: 650px;';
-
-        modal.innerHTML =
-            '<h3 style="margin: 0 0 20px 0; color: #333; font-size: 18px;">🎯 Reenvio v11.11 OVERLAY SUPPRESSOR 🛡️</h3>' +
-
-            '<div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 12px; border-radius: 6px; margin-bottom: 15px; color: white;">' +
-                '<div style="display: flex; justify-content: space-between; margin-bottom: 5px;">' +
-                    '<span style="font-size: 13px;">🤖 Workers Atual:</span>' +
-                    '<span id="workers-adaptativo" style="font-weight: bold; font-size: 16px;">1</span>' +
-                '</div>' +
-                '<div style="display: flex; justify-content: space-between; margin-bottom: 5px;">' +
-                    '<span style="font-size: 13px;">📄 Páginas Processadas:</span>' +
-                    '<span id="paginas-processadas" style="font-weight: bold; font-size: 16px;">0</span>' +
-                '</div>' +
-                '<div style="display: flex; justify-content: space-between;">' +
-                    '<span style="font-size: 13px;">🛡️ Overlays Removidos:</span>' +
-                    '<span id="overlays-removidos" style="font-weight: bold; font-size: 16px;">0</span>' +
-                '</div>' +
-                '<div style="font-size: 11px; opacity: 0.9; margin-top: 5px;" id="status-adaptacao">POST+GET + Sem Overlays!</div>' +
-            '</div>' +
-
-            '<div style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); padding: 15px; border-radius: 6px; margin-bottom: 15px; color: white;">' +
-                '<div style="display: flex; justify-content: space-between; margin-bottom: 8px;">' +
-                    '<span style="font-size: 13px;">⏱️ Tempo decorrido:</span>' +
-                    '<span id="tempo-decorrido" style="font-weight: bold; font-size: 14px;">0s</span>' +
-                '</div>' +
-                '<div style="display: flex; justify-content: space-between; margin-bottom: 8px;">' +
-                    '<span style="font-size: 13px;">⏳ Tempo restante:</span>' +
-                    '<span id="eta-tempo" style="font-weight: bold; font-size: 14px;">Calculando...</span>' +
-                '</div>' +
-                '<div style="display: flex; justify-content: space-between;">' +
-                    '<span style="font-size: 13px;">🎯 Término estimado:</span>' +
-                    '<span id="eta-hora" style="font-weight: bold; font-size: 14px;">--:--</span>' +
-                '</div>' +
-            '</div>' +
-
-            '<div style="margin-bottom: 15px;">' +
-                '<div style="display: flex; justify-content: space-between; margin-bottom: 5px; font-size: 12px; color: #666;">' +
-                    '<span>Progresso</span>' +
-                    '<span id="progresso-percentual">0%</span>' +
-                '</div>' +
-                '<div style="width: 100%; height: 20px; background: #e0e0e0; border-radius: 10px; overflow: hidden;">' +
-                    '<div id="barra-progresso" style="height: 100%; background: linear-gradient(90deg, #667eea, #764ba2); width: 0%; transition: width 0.3s;"></div>' +
-                '</div>' +
-            '</div>' +
-
-            '<div id="mensagem-status" style="margin-bottom: 15px; padding: 10px; background: #e3f2fd; border-radius: 4px; border-left: 4px solid #2196f3; font-size: 13px; color: #1976d2;">Iniciando...</div>' +
-
-            '<div style="margin-bottom: 15px;">' +
-                '<div style="display: flex; justify-content: space-between; margin-bottom: 5px;">' +
-                    '<span style="color: #666;">Registros/Página:</span>' +
-                    '<span id="registros-pagina" style="font-weight: bold; color: #2196f3;">' + registrosPorPagina + '</span>' +
-                '</div>' +
-                '<div style="display: flex; justify-content: space-between; margin-bottom: 5px;">' +
-                    '<span style="color: #666;">Disponíveis:</span>' +
-                    '<span id="disponiveis-texto" style="font-weight: bold; color: #4caf50;">?</span>' +
-                '</div>' +
-                '<div style="display: flex; justify-content: space-between; margin-bottom: 5px;">' +
-                    '<span style="color: #666;">Ignorar Histórico:</span>' +
-                    '<span id="ignorar-historico-texto" style="font-weight: bold; color: ' + (ignorarHistoricoSucesso ? '#ff5722' : '#9e9e9e') + ';">' + (ignorarHistoricoSucesso ? 'SIM' : 'NÃO') + '</span>' +
-                '</div>' +
-            '</div>' +
-
-            '<div style="margin-bottom: 15px; padding: 10px; background: #f5f5f5; border-radius: 4px;">' +
-                '<div style="margin-bottom: 5px;"><strong>✅ Sucesso:</strong> <span id="total-processados" style="color: #4caf50;">0</span></div>' +
-                '<div style="margin-bottom: 5px;"><strong>❌ Erros Total:</strong> <span id="total-erros" style="color: #f44336;">0</span></div>' +
-                '<div style="margin-bottom: 5px; margin-left: 15px;"><strong>🖥️ Servidor:</strong> <span id="total-erros-servidor" style="color: #f44336;">0</span></div>' +
-                '<div style="margin-bottom: 5px; margin-left: 15px;"><strong>📋 Dados:</strong> <span id="total-erros-dados" style="color: #ff9800;">0</span></div>' +
-                '<div style="margin-bottom: 5px;"><strong>⏭️ Pulados:</strong> <span id="total-pulados" style="color: #ff9800;">0</span></div>' +
-                '<div style="margin-bottom: 5px;"><strong>🔁 Loops:</strong> <span id="total-loops" style="color: #9c27b0;">0</span></div>' +
-                '<div style="margin-bottom: 5px;"><strong>💬 Dialogos:</strong> <span id="total-dialogos" style="color: #2196f3;">0</span></div>' +
-                '<div><strong>⚡ Velocidade:</strong> <span id="velocidade" style="color: #9c27b0;">0</span> reg/min</div>' +
-            '</div>' +
-
-            '<div style="margin-bottom: 15px; padding: 10px; background: #e8f5e9; border-radius: 4px; border-left: 4px solid #4caf50;">' +
-                '<strong style="font-size: 12px; color: #2e7d32; margin-bottom: 8px; display: block;">🤖 Histórico de Adaptações:</strong>' +
-                '<div id="historico-adaptacoes" style="font-size: 11px; max-height: 100px; overflow-y: auto;"><em style="color: #999;">Nenhuma adaptação ainda</em></div>' +
-            '</div>' +
-
-            '<div id="workers-status" style="margin-bottom: 15px; padding: 10px; background: #fff3e0; border-radius: 4px; border-left: 4px solid #ff9800; font-size: 11px; max-height: 120px; overflow-y: auto;"></div>' +
-
-            '<div style="display: flex; gap: 10px;">' +
-                '<button id="btn-pausar-reenvio" style="flex: 1; padding: 10px; background: #ff9800; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">Pausar</button>' +
-                '<button id="btn-cancelar-reenvio" style="flex: 1; padding: 10px; background: #f44336; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">Cancelar</button>' +
-            '</div>';
-
-        document.body.appendChild(modal);
-        return modal;
-    }
-
-    function fecharModal() {
-        const modal = document.getElementById('modal-reenvio-progresso');
-        if (modal) modal.remove();
-    }
-
-    function atualizarProgresso(processados, disponiveis, mensagem, dialogos) {
-        const processadosEl = document.getElementById('total-processados');
-        const errosEl = document.getElementById('total-erros');
-        const errosServidorEl = document.getElementById('total-erros-servidor');
-        const errosDadosEl = document.getElementById('total-erros-dados');
-        const puladosEl = document.getElementById('total-pulados');
-        const loopsEl = document.getElementById('total-loops');
-        const disponiveisEl = document.getElementById('disponiveis-texto');
-        const dialogosEl = document.getElementById('total-dialogos');
-        const paginasEl = document.getElementById('paginas-processadas');
-        const overlaysEl = document.getElementById('overlays-removidos');
-
-        if (processadosEl) processadosEl.textContent = processados;
-        if (errosEl) errosEl.textContent = totalErros;
-        if (errosServidorEl) errosServidorEl.textContent = totalErrosServidor;
-        if (errosDadosEl) errosDadosEl.textContent = totalErrosDados;
-        if (puladosEl) puladosEl.textContent = totalPulados;
-        if (loopsEl) loopsEl.textContent = loopsDetectados;
-        if (disponiveisEl) disponiveisEl.textContent = disponiveis;
-        if (dialogosEl) dialogosEl.textContent = dialogos;
-        if (paginasEl) paginasEl.textContent = paginasProcessadas;
-        if (overlaysEl) overlaysEl.textContent = overlaysRemovidos;
-
-        if (mensagem) {
-            const mensagemEl = document.getElementById('mensagem-status');
-            if (mensagemEl) mensagemEl.innerHTML = mensagem;
-        }
-
-        const total = processados + disponiveis;
-        if (total > 0) {
-            const percentual = Math.round((processados / total) * 100);
-            const barraEl = document.getElementById('barra-progresso');
-            const percentualEl = document.getElementById('progresso-percentual');
-            if (barraEl) barraEl.style.width = percentual + '%';
-            if (percentualEl) percentualEl.textContent = percentual + '%';
-        }
-
-        const eta = calcularETA(disponiveis, velocidadeAtual);
-        const etaEl = document.getElementById('eta-tempo');
-        if (etaEl) etaEl.textContent = eta;
-
-        const horaTermino = calcularHoraTermino();
-        const horaEl = document.getElementById('eta-hora');
-        if (horaEl) horaEl.textContent = horaTermino;
-    }
-
-    function atualizarWorkersStatus(workers) {
-        const container = document.getElementById('workers-status');
-        if (!container) return;
-
-        const workersEl = document.getElementById('workers-adaptativo');
-        if (workersEl) workersEl.textContent = workersAtual;
-
-        const statusEl = document.getElementById('status-adaptacao');
-        if (statusEl) {
-            const ativos = workers.filter(function(w) { return w.processando; }).length;
-            statusEl.textContent = ativos + ' de ' + workersAtual + ' ativos (POST+GET + Sem Overlays!)';
-        }
-
-        let html = '<strong style="margin-bottom: 5px; display: block;">Workers Ativos:</strong>';
-
-        for (let i = 0; i < workersAtual; i++) {
-            const w = workers[i];
-            const status = w.processando ? '🟢' : '⚪';
-            const id = w.idAtual ? ' ID: ' + w.idAtual : ' (aguardando)';
-            html += '<div>' + status + ' Worker ' + w.id + id + '</div>';
-        }
-
-        container.innerHTML = html;
-    }
-
-    function criarModalConfiguracao() {
-        const modal = document.createElement('div');
-        modal.id = 'modal-config-reenvio';
-        modal.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 99999; display: flex; align-items: center; justify-content: center;';
-        
-        const conteudo = document.createElement('div');
-        conteudo.style.cssText = 'background: white; border-radius: 12px; padding: 30px; max-width: 550px; width: 90%; box-shadow: 0 10px 40px rgba(0,0,0,0.3); max-height: 90vh; overflow-y: auto;';
-        
-        conteudo.innerHTML = `
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px;">
-                <h2 style="margin: 0; color: #333; font-size: 22px;">⚙️ Configuração v11.11 🛡️</h2>
-                <button id="btn-fechar-config" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #999; padding: 0; width: 30px; height: 30px;" title="Fechar">×</button>
-            </div>
-            
-            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 8px; margin-bottom: 25px;">
-                <div style="font-size: 13px; line-height: 1.6;">
-                    <strong>🆕 v11.11:</strong> Suprime overlays automaticamente!
-                    <br>🛡️ Sem travamentos de loading
-                    <br>📡 POST + GET sincronizados
-                </div>
-            </div>
-            
-            <div style="margin-bottom: 20px;">
-                <label style="display: block; margin-bottom: 8px; font-weight: 600; color: #333; font-size: 14px;">
-                    🤖 Workers Mínimo
-                    <span style="color: #999; font-weight: normal; font-size: 12px;" title="Número inicial de processamentos paralelos">(ℹ️)</span>
-                </label>
-                <input type="number" id="config-min-workers" min="1" max="10" value="2" 
-                    style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 6px; font-size: 14px; transition: border-color 0.3s;"
-                    onfocus="this.style.borderColor='#667eea'" onblur="this.style.borderColor='#e0e0e0'">
-                <div style="font-size: 11px; color: #666; margin-top: 5px;">Recomendado: 1-3</div>
-            </div>
-            
-            <div style="margin-bottom: 20px;">
-                <label style="display: block; margin-bottom: 8px; font-weight: 600; color: #333; font-size: 14px;">
-                    🚀 Workers Máximo
-                    <span style="color: #999; font-weight: normal; font-size: 12px;" title="Máximo de processamentos paralelos permitidos">(ℹ️)</span>
-                </label>
-                <input type="number" id="config-max-workers" min="1" max="20" value="5" 
-                    style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 6px; font-size: 14px; transition: border-color 0.3s;"
-                    onfocus="this.style.borderColor='#667eea'" onblur="this.style.borderColor='#e0e0e0'">
-                <div style="font-size: 11px; color: #666; margin-top: 5px;">Recomendado: 3-7 (máximo: 10)</div>
-            </div>
-            
-            <div style="margin-bottom: 20px;">
-                <label style="display: block; margin-bottom: 8px; font-weight: 600; color: #333; font-size: 14px;">
-                    ⏱️ Delay entre lotes (ms)
-                    <span style="color: #999; font-weight: normal; font-size: 12px;" title="Tempo de espera entre cada lote de processamento">(ℹ️)</span>
-                </label>
-                <input type="number" id="config-delay" min="0" max="5000" step="100" value="500" 
-                    style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 6px; font-size: 14px; transition: border-color 0.3s;"
-                    onfocus="this.style.borderColor='#667eea'" onblur="this.style.borderColor='#e0e0e0'">
-                <div style="font-size: 11px; color: #666; margin-top: 5px;">Recomendado: 300-1000ms</div>
-            </div>
-            
-            <div style="margin-bottom: 20px;">
-                <label style="display: block; margin-bottom: 8px; font-weight: 600; color: #333; font-size: 14px;">
-                    📄 Registros por Página
-                    <span style="color: #999; font-weight: normal; font-size: 12px;" title="Quantidade de registros a carregar de uma vez">(ℹ️)</span>
-                </label>
-                <select id="config-registros-pagina" 
-                    style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 6px; font-size: 14px; transition: border-color 0.3s; background: white; cursor: pointer;"
-                    onfocus="this.style.borderColor='#667eea'" onblur="this.style.borderColor='#e0e0e0'">
-                    <option value="100">100 registros</option>
-                    <option value="200">200 registros</option>
-                    <option value="500" selected>500 registros (padrão)</option>
-                    <option value="1000">1000 registros</option>
-                </select>
-                <div style="font-size: 11px; color: #666; margin-top: 5px;">Valores maiores = menos recargas, mas tempo de espera maior</div>
-            </div>
-            
-            <div style="margin-bottom: 25px;">
-                <label style="display: block; margin-bottom: 12px; font-weight: 600; color: #333; font-size: 14px;">
-                    🔄 Comportamento de Reprocessamento
-                </label>
-                <div style="background: #f5f5f5; padding: 15px; border-radius: 8px;">
-                    <label style="display: flex; align-items: center; cursor: pointer; margin-bottom: 10px;">
-                        <input type="radio" name="ignorar-historico" value="0" checked 
-                            style="margin-right: 10px; cursor: pointer; width: 18px; height: 18px;">
-                        <div>
-                            <div style="font-weight: 600; color: #333;">✅ Pular IDs já processados</div>
-                            <div style="font-size: 11px; color: #666; margin-top: 3px;">Ignora registros que já foram enviados com sucesso (recomendado)</div>
-                        </div>
-                    </label>
-                    <label style="display: flex; align-items: center; cursor: pointer;">
-                        <input type="radio" name="ignorar-historico" value="1" 
-                            style="margin-right: 10px; cursor: pointer; width: 18px; height: 18px;">
-                        <div>
-                            <div style="font-weight: 600; color: #ff5722;">🔁 Reprocessar tudo</div>
-                            <div style="font-size: 11px; color: #666; margin-top: 3px;">Envia novamente todos os registros, mesmo os já processados</div>
-                        </div>
-                    </label>
-                </div>
-            </div>
-            
-            <div id="resumo-memoria" style="margin-bottom: 25px; padding: 15px; background: #e3f2fd; border-radius: 8px; border-left: 4px solid #2196f3;">
-                <div style="font-weight: 600; color: #1565c0; margin-bottom: 8px;">📊 Status da Memória</div>
-                <div style="font-size: 12px; color: #333; line-height: 1.6;">
-                    <div>• <strong>IDs com sucesso:</strong> <span id="mem-sucesso">0</span></div>
-                    <div>• <strong>IDs com tentativas:</strong> <span id="mem-tentativas">0</span></div>
-                    <div>• <strong>IDs pulados:</strong> <span id="mem-pulados">0</span></div>
-                </div>
-            </div>
-            
-            <div style="display: flex; gap: 10px;">
-                <button id="btn-iniciar-reenvio" 
-                    style="flex: 1; padding: 12px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 15px; transition: transform 0.2s, box-shadow 0.2s; box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);"
-                    onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 16px rgba(102, 126, 234, 0.6)'"
-                    onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 12px rgba(102, 126, 234, 0.4)'">
-                    🚀 Iniciar Reenvio
-                </button>
-                <button id="btn-cancelar-config" 
-                    style="flex: 0.4; padding: 12px; background: #f5f5f5; color: #666; border: 2px solid #e0e0e0; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 15px; transition: all 0.2s;"
-                    onmouseover="this.style.background='#e0e0e0'; this.style.borderColor='#999'"
-                    onmouseout="this.style.background='#f5f5f5'; this.style.borderColor='#e0e0e0'">
-                    Cancelar
-                </button>
-            </div>
-            
-            <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #e0e0e0; text-align: center; font-size: 11px; color: #999;">
-                SPRNDS Reenvio v11.11 - Overlay Suppressor 🛡️
-            </div>
-        `;
-        
-        modal.appendChild(conteudo);
-        document.body.appendChild(modal);
-        
-        const stats = obterEstatisticasMemoria();
-        document.getElementById('mem-sucesso').textContent = stats.sucesso;
-        document.getElementById('mem-tentativas').textContent = stats.total;
-        document.getElementById('mem-pulados').textContent = stats.pulados;
-        
-        const minWorkersInput = document.getElementById('config-min-workers');
-        const maxWorkersInput = document.getElementById('config-max-workers');
-        
-        function validarWorkers() {
-            const min = parseInt(minWorkersInput.value);
-            const max = parseInt(maxWorkersInput.value);
-            
-            if (min > max) {
-                maxWorkersInput.style.borderColor = '#f44336';
-                maxWorkersInput.nextElementSibling.style.color = '#f44336';
-                maxWorkersInput.nextElementSibling.textContent = '⚠️ Máximo deve ser >= Mínimo';
-                return false;
-            } else {
-                maxWorkersInput.style.borderColor = '#4caf50';
-                maxWorkersInput.nextElementSibling.style.color = '#666';
-                maxWorkersInput.nextElementSibling.textContent = 'Recomendado: 3-7 (máximo: 10)';
-                return true;
-            }
-        }
-        
-        minWorkersInput.addEventListener('input', validarWorkers);
-        maxWorkersInput.addEventListener('input', validarWorkers);
-        
-        document.getElementById('btn-fechar-config').addEventListener('click', function() { modal.remove(); });
-        document.getElementById('btn-cancelar-config').addEventListener('click', function() { modal.remove(); });
-        
-        modal.addEventListener('click', function(e) {
-            if (e.target === modal) modal.remove();
-        });
-        
-        document.addEventListener('keydown', function(e) {
-            if (e.key === 'Escape' && document.getElementById('modal-config-reenvio')) {
-                modal.remove();
-            }
-        });
-        
-        document.getElementById('btn-iniciar-reenvio').addEventListener('click', function() {
-            if (!validarWorkers()) {
-                alert('⚠️ Workers Máximo deve ser maior ou igual ao Mínimo!');
-                return;
-            }
-            
-            const minWorkers = parseInt(document.getElementById('config-min-workers').value);
-            const maxWorkers = parseInt(document.getElementById('config-max-workers').value);
-            const delayMs = parseInt(document.getElementById('config-delay').value);
-            const tamanhoPagina = parseInt(document.getElementById('config-registros-pagina').value);
-            const ignorarHistorico = document.querySelector('input[name="ignorar-historico"]:checked').value === '1';
-            
-            if (maxWorkers > 10) {
-                const confirmar = confirm(
-                    '⚠️ AVISO: Workers máximo muito alto!\n\n' +
-                    'Você configurou: ' + maxWorkers + ' workers\n' +
-                    'Recomendado: 3-7 workers\n\n' +
-                    'Workers altos podem sobrecarregar o servidor.\n\n' +
-                    'Continuar mesmo assim?'
-                );
-                if (!confirmar) return;
-            }
-            
-            modal.remove();
-            carregarDadosPersistentes();
-            reenviarTodos(minWorkers, maxWorkers, delayMs, tamanhoPagina, ignorarHistorico);
-        });
-        
-        setTimeout(function() { minWorkersInput.focus(); }, 100);
-    }
-
-    async function reenviarTodos(minWorkers, maxWorkers, delayMs, tamanhoPagina, forcarIgnorarHistorico) {
-        if (processandoReenvio) {
-            alert('Processo em andamento!');
-            return;
-        }
-
-        if ('Notification' in window && Notification.permission === 'default') {
-            await Notification.requestPermission();
-        }
-
-        if (maxWorkers > 10) {
-            const confirmar = confirm(
-                '⚠️ AVISO: Workers máximo muito alto!\n\n' +
-                'Você configurou: ' + maxWorkers + ' workers\n' +
-                'Recomendado: 3-7 workers\n\n' +
-                'Workers altos podem sobrecarregar o servidor.\n\n' +
-                'Continuar mesmo assim?'
-            );
-            if (!confirmar) return;
-        }
-
-        processandoReenvio = true;
-        processosCancelados = false;
-        ignorarHistoricoSucesso = forcarIgnorarHistorico;
-        paginasProcessadas = 0;
-        overlaysRemovidos = 0;
-
-        idsProcessadosNaSessaoAtual = {};
-
-        workersMinimo = minWorkers;
-        workersMaximo = maxWorkers;
-        workersAtual = workersMinimo;
-        sucessosConsecutivos = 0;
-        errosConsecutivos = 0;
-        ultimaAdaptacao = Date.now();
-        historicoAdaptacoes = [];
-        ultimoIdProcessado = null;
-        contadorMesmoId = 0;
-        registrosPorPagina = tamanhoPagina;
-
-        if (!carregarDadosSessao()) {
-            totalProcessados = 0;
-            totalErros = 0;
-            totalErrosDados = 0;
-            totalErrosServidor = 0;
-            totalPulados = 0;
-            loopsDetectados = 0;
-        }
-
-        processandoIds = {};
-        historicoDetalhado = [];
-        let totalDialogosFechados = 0;
-
-        tempoInicioProcesamento = Date.now();
-
-        console.log('🎯 Iniciando v11.11 OVERLAY SUPPRESSOR: ' + workersMinimo + ' → ' + workersMaximo + ' workers | ' + tamanhoPagina + ' registros/página');
-        console.log('🔄 Ignorar histórico de sucessos: ' + (ignorarHistoricoSucesso ? 'SIM' : 'NÃO'));
-        console.log('📡 Aguarda POST + GET antes de continuar');
-        console.log('🛡️ Overlays serão suprimidos automaticamente');
-
-        instalarInterceptorXHR();
-        instalarSupressorOverlay();
-
-        const modal = criarModalProgresso();
-
-        let carregouPaginacao = await carregarPaginacaoUnica(tamanhoPagina);
-
-        if (!carregouPaginacao) {
-            alert('❌ Não foi possível carregar paginação única!\n\nTente recarregar a página.');
-            processandoReenvio = false;
-            desinstalarSupressorOverlay();
-            fecharModal();
-            return;
-        }
-
-        console.log('⏳ Aguardando grid estabilizar (max 5min)...');
-
-        try {
-            const mensagemEl = document.getElementById('mensagem-status');
-            if(mensagemEl) mensagemEl.innerHTML = 'Aguardando tabela estabilizar...';
-        } catch(e) {}
-
-        let tentativasLoad = 0;
-        const MAX_WAIT_SECONDS = 300;
-        let linhasAnterior = 0;
-        let tentativasEstavel = 0;
-
-        while (tentativasLoad < MAX_WAIT_SECONDS) {
-            forcarRemoverOverlays();
-            
-            const linhas = document.querySelectorAll('mat-row.mat-row');
-            const linhasAtual = linhas.length;
-
-            let linhasComDados = 0;
-            linhas.forEach(function(l) {
-                const id = l.querySelector('.cdk-column-vaccineId');
-                if (id && id.textContent.trim()) linhasComDados++;
-            });
-
-            if (linhasComDados > 20) {
-                if (linhasComDados === linhasAnterior) {
-                    tentativasEstavel++;
-                    if (tentativasEstavel >= 3) {
-                        console.log(`✅ Grid estável com ${linhasComDados} registros com dados.`);
-                        break;
-                    }
-                } else {
-                    tentativasEstavel = 0;
-                }
-            }
-
-            linhasAnterior = linhasComDados;
-
-            if (tentativasLoad % 5 === 0 && tentativasLoad > 0) {
-                console.log(`🔄 Aguardando... (${tentativasLoad}s) - Linhas com dados: ${linhasComDados}`);
-                try {
-                    const mensagemEl = document.getElementById('mensagem-status');
-                    if(mensagemEl) mensagemEl.innerHTML = `Carregando tabela... ${tentativasLoad}s<br>Linhas com dados: ${linhasComDados}`;
-                } catch(e) {}
-            }
-
-            await aguardar(1000);
-            tentativasLoad++;
-        }
-
-        if (tentativasLoad >= MAX_WAIT_SECONDS) {
-             console.warn('⚠️ Timeout de 5min atingido!');
-             alert('⚠️ Tempo limite de 5 minutos atingido.\n\nO script tentará processar os registros disponíveis.');
-        }
-
-        await aguardar(2000);
-
-        const analise = contarRegistrosReaisNaPagina();
-        console.log('📊 Página analisada: ' + analise.total + ' linhas | ' + analise.comErro + ' com erro');
-
-        const verificacao = verificarIdsNaPagina();
-        console.log('🔍 IDs novos disponíveis: ' + verificacao.novos);
-
-        let ultimoProcessado = totalProcessados;
-        let ultimoTempo = Date.now();
-
-        const intervaloTempo = setInterval(function() {
-            const tempoDecorrido = Math.floor((Date.now() - tempoInicioProcesamento) / 1000);
-            const tempoEl = document.getElementById('tempo-decorrido');
-            if (tempoEl) {
-                const minutos = Math.floor(tempoDecorrido / 60);
-                const segs = tempoDecorrido % 60;
-                tempoEl.textContent = minutos > 0 ? minutos + 'min ' + segs + 's' : tempoDecorrido + 's';
-            }
-
-            const tempoAgora = Date.now();
-            const diferencaTempo = (tempoAgora - ultimoTempo) / 1000 / 60;
-            const diferencaProcessados = totalProcessados - ultimoProcessado;
-
-            if (diferencaTempo > 0) {
-                velocidadeAtual = Math.round(diferencaProcessados / diferencaTempo);
-                const velocidadeEl = document.getElementById('velocidade');
-                if (velocidadeEl) velocidadeEl.textContent = velocidadeAtual;
-
-                ultimoProcessado = totalProcessados;
-                ultimoTempo = tempoAgora;
-            }
-
-            salvarDadosPersistentes();
-            salvarDadosSessao();
-
-            const disponiveis = contarRegistrosDisponiveis();
-            atualizarProgresso(totalProcessados, disponiveis, null, totalDialogosFechados);
-
-        }, 1000);
-
-        let pausado = false;
-
-        const btnPausar = document.getElementById('btn-pausar-reenvio');
-        if (btnPausar) {
-            btnPausar.addEventListener('click', function() {
-                pausado = !pausado;
-                this.textContent = pausado ? 'Continuar' : 'Pausar';
-                this.style.backgroundColor = pausado ? '#4caf50' : '#ff9800';
-            });
-        }
-
-        const btnCancelar = document.getElementById('btn-cancelar-reenvio');
-        if (btnCancelar) {
-            btnCancelar.addEventListener('click', function() {
-                processosCancelados = true;
-            });
-        }
-
-        const workers = [];
-        for (let i = 0; i < workersMaximo; i++) {
-            workers.push({
-                id: i + 1,
-                processando: false,
-                idAtual: null
-            });
-        }
-
-        while (true) {
-            if (processosCancelados) {
-                console.log('❌ Cancelado pelo usuário');
-                const disponiveis = contarRegistrosDisponiveis();
-                atualizarProgresso(totalProcessados, disponiveis, 'CANCELADO', totalDialogosFechados);
+        console.log('');
+
+        let page = 0;
+        let todosRegistros = [];
+        let totalElementosNaBase = 0;
+        let totalPaginasNaBase = 0;
+
+        while (page < CONFIG.limiteMaximoPaginas) {
+            if (estado.cancelado) {
+                console.log('⚠️ Busca cancelada pelo usuário');
                 break;
             }
 
-            while (pausado && !processosCancelados) {
-                await aguardar(500);
+            estado.paginaAtual = page + 1;
+
+            atualizarModal(
+                `Buscando página ${page + 1}${totalPaginasNaBase > 0 ? `/${totalPaginasNaBase}` : ''}...`
+            );
+
+            const dados = await buscarVacinasComErro(page, CONFIG.registrosPorPagina);
+
+            if (dados.totalElements > 0 && dados.totalElements !== totalElementosNaBase) {
+                totalElementosNaBase = dados.totalElements;
+                console.log(`📊 API reporta: ${totalElementosNaBase} registros no total`);
             }
 
-            if (processosCancelados) break;
+            if (dados.totalPages > 0 && dados.totalPages !== totalPaginasNaBase) {
+                totalPaginasNaBase = dados.totalPages;
+                estado.totalPaginas = totalPaginasNaBase;
+                console.log(`📄 API reporta: ${totalPaginasNaBase} páginas no total`);
+            }
 
-            let disponiveis = contarRegistrosDisponiveis();
+            if (!dados.content || dados.content.length === 0) {
+                console.log('');
+                console.log('✅ FIM: Página vazia (sem registros)');
+                break;
+            }
 
-            if (disponiveis === 0) {
-                console.log('📄 Não há mais registros na página atual');
-                
-                if (temProximaPagina()) {
-                    console.log('📄 Mudando para próxima página...');
-                    const mudouPagina = await irParaProximaPagina();
-                    
-                    if (mudouPagina) {
-                        console.log('✅ Nova página carregada! Continuando processamento...');
-                        idsProcessadosNaSessaoAtual = {};
-                        continue;
-                    } else {
-                        console.log('❌ Não foi possível mudar de página');
-                        break;
-                    }
-                } else {
-                    console.log('✅ Última página alcançada - Finalizando!');
-                    atualizarProgresso(totalProcessados, 0, 'Todas as páginas processadas!', totalDialogosFechados);
-                    break;
+            const qtdNaPagina = dados.content.length;
+            todosRegistros.push(...dados.content);
+            estado.totalBuscados = todosRegistros.length;
+
+            console.log(`   💾 Acumulado: ${todosRegistros.length} registros`);
+
+            if (qtdNaPagina < CONFIG.registrosPorPagina) {
+                console.log('');
+                console.log(`✅ FIM: Última página detectada (${qtdNaPagina} < ${CONFIG.registrosPorPagina})`);
+                break;
+            }
+
+            if (totalPaginasNaBase > 0 && (page + 1) >= totalPaginasNaBase) {
+                console.log('');
+                console.log(`✅ FIM: Todas as ${totalPaginasNaBase} páginas foram processadas`);
+                break;
+            }
+
+            if (totalElementosNaBase > 0 && todosRegistros.length >= totalElementosNaBase) {
+                console.log('');
+                console.log(`✅ FIM: Todos os ${totalElementosNaBase} registros foram buscados`);
+                break;
+            }
+
+            page++;
+            await new Promise(r => setTimeout(r, 100));
+        }
+
+        if (page >= CONFIG.limiteMaximoPaginas) {
+            console.warn('');
+            console.warn(`⚠️ ATENÇÃO: Limite de segurança atingido (${CONFIG.limiteMaximoPaginas} páginas)`);
+            if (totalElementosNaBase > 0) {
+                console.warn(`⚠️ Existem ${totalElementosNaBase} registros mas buscamos apenas ${todosRegistros.length}`);
+                console.warn(`⚠️ Aumente CONFIG.limiteMaximoPaginas se necessário`);
+            }
+        }
+
+        console.log('');
+        console.log('═══════════════════════════════════════════════════════════');
+        console.log('📊 BUSCA FINALIZADA');
+        console.log('═══════════════════════════════════════════════════════════');
+        console.log(`✅ Registros obtidos: ${todosRegistros.length}`);
+        console.log(`📄 Páginas processadas: ${page}`);
+        if (totalElementosNaBase > 0) {
+            console.log(`📊 Total na base (reportado pela API): ${totalElementosNaBase}`);
+        }
+        if (CONFIG.habilitarFiltroData) {
+            console.log(`📅 Período filtrado: ${CONFIG.dataInicio} até ${CONFIG.dataFim}`);
+        }
+        console.log('═══════════════════════════════════════════════════════════');
+        console.log('');
+
+        return todosRegistros;
+    }
+
+    // (Continua após buscarTodasPaginas...)
+
+    async function reenviarVacina(registro, tentativa = 1) {
+        const url = '/rnds/api/vaccine-sync/send-register';
+
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), CONFIG.timeoutRequisicao);
+
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${TOKEN_GLOBAL}`,
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json, text/plain, */*',
+                    'accept-language': 'pt-BR'
+                },
+                body: JSON.stringify({ id: registro.id }),
+                signal: controller.signal
+            });
+
+            clearTimeout(timeoutId);
+
+            const resultado = {
+                id: registro.id,
+                cpf: registro.pacientCpf || registro.patientCpf || 'N/A',
+                vacina: registro.vaccineDescription || registro.vaccine || 'N/A',
+                status: response.ok ? 'SUCESSO' : 'ERRO',
+                statusCode: response.status,
+                tentativa: tentativa,
+                timestamp: new Date().toISOString()
+            };
+
+            if (response.ok) {
+                estado.totalSucesso++;
+                if (CONFIG.habilitarCheckpoint) {
+                    checkpointManager.registrarProcessado(registro.id, resultado);
+                }
+            } else {
+                if (tentativa < CONFIG.maxRetentativas) {
+                    estado.totalRetentativas++;
+                    await new Promise(r => setTimeout(r, 1000));
+                    return await reenviarVacina(registro, tentativa + 1);
+                }
+                estado.totalErro++;
+                resultado.erro = await response.text();
+                if (CONFIG.habilitarCheckpoint) {
+                    checkpointManager.registrarProcessado(registro.id, resultado);
                 }
             }
 
-            const workersAUsar = Math.min(workersAtual, disponiveis);
-            const registros = obterProximosRegistros(workersAUsar);
+            return resultado;
 
-            if (registros.length === 0) {
-                await aguardar(2000);
-                const registrosAposAguardar = obterProximosRegistros(workersAUsar);
-                if (registrosAposAguardar.length === 0) {
-                    if (temProximaPagina()) {
-                        console.log('📄 Sem registros aqui, tentando próxima página...');
-                        const mudouPagina = await irParaProximaPagina();
-                        if (mudouPagina) {
-                            idsProcessadosNaSessaoAtual = {};
-                            continue;
-                        }
-                    }
-                    console.log('✅ Fim! Nenhum registro encontrado.');
-                    break;
+        } catch (erro) {
+            const isTimeout = erro.name === 'AbortError';
+
+            if (tentativa < CONFIG.maxRetentativas && !isTimeout) {
+                estado.totalRetentativas++;
+                await new Promise(r => setTimeout(r, 1000));
+                return await reenviarVacina(registro, tentativa + 1);
+            }
+
+            if (isTimeout) {
+                estado.totalTimeout++;
+            } else {
+                estado.totalErro++;
+            }
+
+            const resultado = {
+                id: registro.id,
+                cpf: registro.pacientCpf || registro.patientCpf || 'N/A',
+                vacina: registro.vaccineDescription || registro.vaccine || 'N/A',
+                status: isTimeout ? 'TIMEOUT' : 'ERRO',
+                statusCode: 0,
+                erro: erro.message,
+                tentativa: tentativa,
+                timestamp: new Date().toISOString()
+            };
+
+            if (CONFIG.habilitarCheckpoint) {
+                checkpointManager.registrarProcessado(registro.id, resultado);
+            }
+
+            return resultado;
+        }
+    }
+
+    async function processarLote(registros) {
+        const inicio = Date.now();
+        const concorrencia = estado.concorrenciaAtual;
+        const resultados = [];
+
+        for (let i = 0; i < registros.length; i += concorrencia) {
+            while (estado.pausado && !estado.cancelado) {
+                await new Promise(r => setTimeout(r, 500));
+            }
+
+            if (estado.cancelado) {
+                console.log('⚠️ Processamento cancelado pelo usuário');
+                break;
+            }
+
+            const lote = registros.slice(i, i + concorrencia);
+
+            const loteFiltrado = lote.filter(r => {
+                if (CONFIG.habilitarCheckpoint && checkpointManager.jaTemSucesso(r.id)) {
+                    estado.totalPulados++;
+                    console.log(`⏭️ ID ${r.id} já teve SUCESSO em execução anterior - pulando`);
+                    return false;
                 }
+                return true;
+            });
+
+            if (loteFiltrado.length === 0) {
+                console.log(`⏭️ Lote inteiro já teve sucesso anteriormente - continuando...`);
                 continue;
             }
 
-            console.log('⚡ Processando lote de ' + registros.length + ' registros...');
+            const promises = loteFiltrado.map(r => reenviarVacina(r));
+            const resultadosLote = await Promise.allSettled(promises);
 
-            for (let i = 0; i < registros.length && i < workers.length; i++) {
-                workers[i].processando = true;
-                workers[i].idAtual = registros[i].id;
-            }
-
-            atualizarWorkersStatus(workers);
-            const dispAtual = contarRegistrosDisponiveis();
-            atualizarProgresso(totalProcessados, dispAtual,
-                'Processando ' + registros.length + ' em paralelo (POST+GET + Sem Overlays)...',
-                totalDialogosFechados);
-
-            const promises = registros.map(function(registro, index) {
-                return processarRegistro(registro, (index + 1));
+            resultadosLote.forEach(r => {
+                if (r.status === 'fulfilled') {
+                    resultados.push(r.value);
+                    estado.totalProcessados++;
+                }
             });
 
-            const resultados = await Promise.all(promises);
+            atualizarModal();
 
-            for (let i = 0; i < workers.length; i++) {
-                workers[i].processando = false;
-                workers[i].idAtual = null;
+            if (i + concorrencia < registros.length) {
+                await new Promise(r => setTimeout(r, CONFIG.pausaEntreLotes));
             }
-
-            resultados.forEach(function(res) {
-                if (res.dialogo) totalDialogosFechados++;
-            });
-
-            adaptarWorkers(resultados);
-            atualizarWorkersStatus(workers);
-
-            await aguardar(1200);
-
-            const disponiveisApos = contarRegistrosDisponiveis();
-            atualizarProgresso(totalProcessados, disponiveisApos,
-                'Lote concluído',
-                totalDialogosFechados);
-
-            await aguardar(delayMs);
         }
 
-        clearInterval(intervaloTempo);
-        processandoReenvio = false;
-        desinstalarSupressorOverlay();
+        if (CONFIG.habilitarCheckpoint) {
+            checkpointManager.salvar();
+        }
 
-        salvarDadosPersistentes();
-        salvarDadosSessao();
+        const tempoLote = Date.now() - inicio;
+        estado.ultimosTempos.push(tempoLote);
+        if (estado.ultimosTempos.length > 10) estado.ultimosTempos.shift();
+        estado.tempoMedioPorLote = estado.ultimosTempos.reduce((a,b) => a+b, 0) / estado.ultimosTempos.length;
 
-        const tempoTotal = Math.floor((Date.now() - tempoInicioProcesamento) / 1000);
-        console.log('🏁 Finalizado em ' + tempoTotal + 's');
-        console.log('📄 Total de páginas processadas: ' + paginasProcessadas);
-        console.log('🛡️ Total de overlays removidos: ' + overlaysRemovidos);
+        if (CONFIG.ajusteAutomatico) {
+            ajustarConcorrencia(resultados);
+        }
 
-        tocarSomConclusao();
-        mostrarNotificacao('✅ Reenvio Concluído', 'Processados: ' + totalProcessados + ' | Erros: ' + totalErros + ' | Páginas: ' + paginasProcessadas + ' | Overlays: ' + overlaysRemovidos);
-
-        alert('✅ Processo finalizado!\n\nTempo: ' + tempoTotal + 's\nProcessados: ' + totalProcessados + '\nErros: ' + totalErros + '\nPáginas: ' + paginasProcessadas + '\nOverlays Removidos: ' + overlaysRemovidos);
-        fecharModal();
+        return resultados;
     }
 
-function adicionarBotaoInterface() {
-    if (botaoAdicionado) return;
+    function ajustarConcorrencia(resultados) {
+        const taxaSucesso = resultados.filter(r => r.status === 'SUCESSO').length / resultados.length;
 
-    const intervalo = setInterval(function() {
-        let container = document.querySelector('.mat-toolbar');
-        if (!container) container = document.querySelector('mat-toolbar');
-        if (!container) container = document.querySelector('header');
-        if (!container) container = document.querySelector('.toolbar');
-        if (!container) container = document.querySelector('[role="toolbar"]');
+        if (taxaSucesso > 0.95 && estado.concorrenciaAtual < CONFIG.concorrenciaMaxima) {
+            estado.concorrenciaAtual = Math.min(
+                estado.concorrenciaAtual + 5,
+                CONFIG.concorrenciaMaxima
+            );
+            console.log(`⚡ Concorrência aumentada para ${estado.concorrenciaAtual}`);
+        } else if (taxaSucesso < 0.80 && estado.concorrenciaAtual > CONFIG.concorrenciaMinima) {
+            estado.concorrenciaAtual = Math.max(
+                estado.concorrenciaAtual - 5,
+                CONFIG.concorrenciaMinima
+            );
+            console.log(`⚠️ Concorrência reduzida para ${estado.concorrenciaAtual}`);
+        }
+    }
 
-        if (!container) {
-            const bodyCheck = document.querySelector('body');
-            if (bodyCheck && !document.getElementById('container-botoes-premium')) {
-                container = document.createElement('div');
-                container.id = 'container-botoes-premium';
-                container.style.cssText = 'position: fixed; top: 10px; right: 10px; z-index: 9999; background: white; padding: 10px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.2);';
-                document.body.appendChild(container);
+    // ============================================
+    // 🎮 CONTROLE
+    // ============================================
+
+    function pausarProcessamento() {
+        estado.pausado = true;
+        console.log('⏸️ Processamento pausado');
+        if (CONFIG.habilitarCheckpoint) {
+            checkpointManager.salvar();
+        }
+        atualizarBotoesDuranteExecucao();
+    }
+
+    function continuarProcessamento() {
+        estado.pausado = false;
+        console.log('▶️ Processamento retomado');
+        atualizarBotoesDuranteExecucao();
+    }
+
+    function cancelarProcessamento() {
+        if (confirm(
+            '⚠️ Confirma cancelar o processamento?\n\n' +
+            'Os registros já enviados com sucesso não serão revertidos.\n' +
+            'O checkpoint PERMANENTE será mantido.\n' +
+            'Você pode continuar em outra execução.\n\n' +
+            'Cancelar?'
+        )) {
+            estado.cancelado = true;
+            estado.pausado = false;
+            if (CONFIG.habilitarCheckpoint) {
+                checkpointManager.salvar();
+            }
+            console.log('🛑 Processamento cancelado');
+            console.log(`💾 Checkpoint mantém ${checkpointManager.checkpoint.idsSucesso.length} IDs com sucesso`);
+        }
+    }
+
+    async function iniciarReenvioAPI() {
+        if (estado.processando) {
+            alert('⚠️ Já existe um processamento em andamento!');
+            return;
+        }
+
+        if (!TOKEN_GLOBAL) {
+            const tentarManual = confirm(
+                '⚠️ TOKEN NÃO DETECTADO\n\n' +
+                'Deseja fornecê-lo manualmente?'
+            );
+
+            if (tentarManual) {
+                if (!solicitarTokenManual()) {
+                    alert('❌ Token necessário!');
+                    return;
+                }
             } else {
-                container = document.getElementById('container-botoes-premium');
+                alert('❌ Token necessário!\n\nDica: Faça uma pesquisa no sistema.');
+                return;
             }
         }
 
-        if (container && !document.getElementById('btn-reenviar-premium')) {
-            const wrapper = document.createElement('div');
-            wrapper.style.cssText = 'display: inline-flex; gap: 8px; align-items: center;';
+        const resumo = checkpointManager.getResumo();
+        let mensagemInicial = '🚀 Iniciar reenvio via API?\n\n';
 
-            const botao = document.createElement('button');
-            botao.id = 'btn-reenviar-premium';
-            botao.innerHTML = '🛡️ Reenviar v11.11';
-            botao.style.cssText = 'padding: 8px 16px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 14px; box-shadow: 0 2px 8px rgba(0,0,0,0.2); transition: transform 0.2s;';
+        if (resumo && resumo.idsSucesso > 0) {
+            mensagemInicial +=
+                `💾 CHECKPOINT ATIVO:\n` +
+                `   • ${resumo.idsSucesso} IDs já tiveram SUCESSO\n` +
+                `   • Esses IDs serão PULADOS automaticamente\n` +
+                `   • Apenas registros sem sucesso serão processados\n\n`;
+        }
 
-            botao.addEventListener('mouseenter', function() {
-                this.style.transform = 'scale(1.05)';
-            });
+        mensagemInicial +=
+            `⚙️ CONFIGURAÇÕES:\n` +
+            `   • Paginação: ${CONFIG.registrosPorPagina} registros/página\n` +
+            `   • Concorrência: ${CONFIG.concorrenciaInicial} → ${CONFIG.concorrenciaMaxima}\n` +
+            `   • Retry: ${CONFIG.maxRetentativas}x\n` +
+            `   • Checkpoint: ${CONFIG.habilitarCheckpoint ? 'ATIVO (permanente)' : 'DESATIVADO'}\n`;
 
-            botao.addEventListener('mouseleave', function() {
-                this.style.transform = 'scale(1)';
-            });
+        // ✨ Mostra filtro de data
+        if (CONFIG.habilitarFiltroData) {
+            mensagemInicial +=
+                `   • Filtro de Período: ${CONFIG.dataInicio} até ${CONFIG.dataFim}\n`;
+        } else {
+            mensagemInicial += `   • Filtro de Período: DESATIVADO (todos)\n`;
+        }
+        mensagemInicial += '\n';
 
-            botao.addEventListener('click', function() {
-                const novaSessao = detectarNovaSessao();
-                if (novaSessao) {
-                    const confirmar = confirm(
-                        '🆕 NOVA SESSÃO DETECTADA!\n\n' +
-                        'Você está em uma página/URL diferente da última execução.\n\n' +
-                        'Deseja LIMPAR o histórico de sucessos antes de começar?\n\n' +
-                        '✅ SIM: Reprocessa tudo na página atual\n' +
-                        '❌ NÃO: Mantém histórico (pode pular registros desta página)'
-                    );
+        if (resumo && resumo.totalExecucoes > 0) {
+            mensagemInicial += `📊 Execuções anteriores: ${resumo.totalExecucoes}\n\n`;
+        }
 
-                    if (confirmar) {
-                        limparApenasHistoricoSucesso();
+        mensagemInicial += 'Continuar?';
+
+        if (!confirm(mensagemInicial)) {
+            return;
+        }
+
+        estado = {
+            processando: true,
+            pausado: false,
+            cancelado: false,
+            iniciado: Date.now(),
+            concorrenciaAtual: CONFIG.concorrenciaInicial,
+            totalBuscados: 0,
+            totalProcessados: 0,
+            totalPulados: 0,
+            totalSucesso: 0,
+            totalErro: 0,
+            totalTimeout: 0,
+            totalRetentativas: 0,
+            paginaAtual: 0,
+            totalPaginas: 0,
+            tempoMedioPorLote: 0,
+            ultimosTempos: [],
+            registros: [],
+            resultados: []
+        };
+
+        criarModal();
+        console.log('🚀 Iniciando reenvio via API Direct v13.3.3...');
+        console.log(`💾 Checkpoint permanente: ${resumo ? resumo.idsSucesso : 0} IDs com sucesso`);
+        if (CONFIG.habilitarFiltroData) {
+            console.log(`📅 Período: ${CONFIG.dataInicio} até ${CONFIG.dataFim}`);
+        }
+
+        try {
+            atualizarModal('Buscando registros...');
+
+            if (CONFIG.habilitarCheckpoint) {
+                checkpointManager.iniciarExecucao();
+            }
+
+            estado.registros = await buscarTodasPaginas();
+            estado.totalBuscados = estado.registros.length;
+
+            if (estado.cancelado) {
+                fecharModal();
+                estado.processando = false;
+                return;
+            }
+
+            if (estado.totalBuscados === 0) {
+                let msg = '⚠️ Não há registros com erro para processar!';
+                if (CONFIG.habilitarFiltroData) {
+                    msg += `\n\nPeríodo configurado: ${CONFIG.dataInicio} até ${CONFIG.dataFim}`;
+                    msg += '\n\nDica: Verifique se há registros neste período ou ajuste as datas nas Configurações.';
+                }
+                alert(msg);
+                fecharModal();
+                estado.processando = false;
+                return;
+            }
+
+            console.log(`📊 Total: ${estado.totalBuscados} registros em ${estado.paginaAtual} página(s)`);
+
+            if (resumo && resumo.idsSucesso > 0) {
+                console.log(`💾 ${resumo.idsSucesso} IDs serão pulados (já tiveram sucesso)`);
+            }
+
+            atualizarModal('Processando reenvios...');
+
+            const resultados = await processarLote(estado.registros);
+            estado.resultados = resultados;
+
+            if (!estado.cancelado) {
+                finalizarProcessamento();
+            } else {
+                finalizarProcessamento(true);
+            }
+
+        } catch (erro) {
+            console.error('❌ Erro:', erro);
+            alert(`❌ Erro: ${erro.message}`);
+            estado.processando = false;
+            fecharModal();
+        }
+    }
+
+    function finalizarProcessamento(cancelado = false) {
+        const tempoTotal = Math.floor((Date.now() - estado.iniciado) / 1000);
+        const velocidade = tempoTotal > 0 ? Math.round((estado.totalProcessados / tempoTotal) * 60) : 0;
+        const taxaSucesso = estado.totalProcessados > 0
+            ? ((estado.totalSucesso / estado.totalProcessados) * 100).toFixed(1)
+            : 0;
+
+        const resumo = checkpointManager.getResumo();
+
+        console.log('');
+        console.log('═══════════════════════════════════════════════════════════');
+        console.log(cancelado ? '⚠️ PROCESSAMENTO CANCELADO!' : '🏁 PROCESSAMENTO FINALIZADO!');
+        console.log('═══════════════════════════════════════════════════════════');
+        console.log('  ESTA EXECUÇÃO:');
+        console.log(`    ✅ Sucesso: ${estado.totalSucesso}`);
+        console.log(`    ❌ Erros: ${estado.totalErro}`);
+        console.log(`    ⏱️ Timeouts: ${estado.totalTimeout}`);
+        console.log(`    ⏭️ Pulados (sucesso anterior): ${estado.totalPulados}`);
+        console.log(`    🔄 Retentativas: ${estado.totalRetentativas}`);
+        console.log(`    ⏱️ Tempo: ${tempoTotal}s (${Math.floor(tempoTotal/60)}min)`);
+        console.log(`    ⚡ Velocidade: ${velocidade} reg/min`);
+        console.log(`    📊 Taxa: ${taxaSucesso}%`);
+        console.log('');
+        console.log('  CHECKPOINT PERMANENTE:');
+        console.log(`    💾 Total IDs com sucesso: ${resumo.idsSucesso}`);
+        console.log(`    📊 Total execuções: ${resumo.totalExecucoes}`);
+        if (CONFIG.habilitarFiltroData) {
+            console.log('');
+            console.log('  FILTRO DE PERÍODO:');
+            console.log(`    📅 De ${CONFIG.dataInicio} até ${CONFIG.dataFim}`);
+        }
+        console.log('═══════════════════════════════════════════════════════════');
+        console.log('');
+
+        atualizarModal(cancelado ? 'Cancelado pelo usuário' : 'Finalizado!', true);
+
+        setTimeout(() => {
+            const mensagem = cancelado
+                ? `⚠️ PROCESSAMENTO CANCELADO\n\n`
+                : `🎊 REENVIO FINALIZADO!\n\n`;
+
+            let textoCompleto = mensagem +
+                `ESTA EXECUÇÃO:\n` +
+                `  ✅ Sucesso: ${estado.totalSucesso}\n` +
+                `  ❌ Erros: ${estado.totalErro}\n` +
+                `  ⏱️ Timeouts: ${estado.totalTimeout}\n`;
+
+            if (estado.totalPulados > 0) {
+                textoCompleto += `  ⏭️ Pulados: ${estado.totalPulados}\n`;
+            }
+
+            textoCompleto +=
+                `\nCHECKPOINT PERMANENTE:\n` +
+                `  💾 Total com sucesso: ${resumo.idsSucesso}\n` +
+                `  📊 Total execuções: ${resumo.totalExecucoes}\n`;
+
+            if (CONFIG.habilitarFiltroData) {
+                textoCompleto += `\nPERÍODO FILTRADO:\n` +
+                                `  📅 ${CONFIG.dataInicio} até ${CONFIG.dataFim}\n`;
+            }
+
+            textoCompleto += `\nExportar relatório CSV?`;
+
+            const confirmExport = confirm(textoCompleto);
+
+            if (confirmExport) {
+                exportarCSV();
+            }
+
+            fecharModal();
+            estado.processando = false;
+        }, 500);
+    }
+
+    // (continua na próxima parte...)
+
+    // (continua após finalizarProcessamento...)
+
+    // ============================================
+    // 🎨 INTERFACE
+    // ============================================
+
+    function criarModal() {
+        if (document.getElementById('apiDirectModal')) return;
+
+        const modal = document.createElement('div');
+        modal.id = 'apiDirectModal';
+        modal.innerHTML = `
+            <div style="position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+                        background: rgba(0,0,0,0.7); z-index: 999999; display: flex;
+                        align-items: center; justify-content: center;">
+                <div style="background: white; padding: 30px; border-radius: 8px;
+                            min-width: 600px; max-width: 800px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
+                    <h2 style="margin: 0 0 20px 0; color: #00bcd4; text-align: center;">
+                        🚀 API Direct v13.3.3
+                    </h2>
+
+                    <div id="apiStatus" style="font-size: 14px; color: #666; margin-bottom: 15px; text-align: center; font-weight: bold;">
+                        Iniciando...
+                    </div>
+
+                    <div style="background: #f5f5f5; padding: 20px; border-radius: 4px; margin-bottom: 20px;">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; font-size: 13px;">
+                            <div>
+                                <strong>📄 Páginas:</strong>
+                                <span id="apiPaginas" style="float: right; font-weight: bold;">0/0</span>
+                            </div>
+                            <div>
+                                <strong>📊 Buscados:</strong>
+                                <span id="apiBuscados" style="float: right; font-weight: bold;">0</span>
+                            </div>
+                            <div>
+                                <strong>⚙️ Processados:</strong>
+                                <span id="apiProcessados" style="float: right; font-weight: bold;">0</span>
+                            </div>
+                            <div>
+                                <strong>✅ Sucesso:</strong>
+                                <span id="apiSucesso" style="float: right; color: green; font-weight: bold;">0</span>
+                            </div>
+                            <div>
+                                <strong>❌ Erros:</strong>
+                                <span id="apiErros" style="float: right; color: red; font-weight: bold;">0</span>
+                            </div>
+                            <div>
+                                <strong>⏱️ Timeouts:</strong>
+                                <span id="apiTimeouts" style="float: right; color: orange; font-weight: bold;">0</span>
+                            </div>
+                            <div>
+                                <strong>⏭️ Pulados:</strong>
+                                <span id="apiPulados" style="float: right; color: #9c27b0; font-weight: bold;">0</span>
+                            </div>
+                            <div>
+                                <strong>⚡ Workers:</strong>
+                                <span id="apiWorkers" style="float: right; color: #00bcd4; font-weight: bold;">${CONFIG.concorrenciaInicial}</span>
+                            </div>
+                            <div>
+                                <strong>⏱️ Tempo:</strong>
+                                <span id="apiTempo" style="float: right; font-weight: bold;">0s</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div style="margin-bottom: 20px;">
+                        <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 5px;">
+                            <span>Progresso</span>
+                            <span id="apiProgresso">0%</span>
+                        </div>
+                        <div style="background: #e0e0e0; height: 30px; border-radius: 4px; overflow: hidden;">
+                            <div id="apiBarraProgresso" style="background: linear-gradient(90deg, #00bcd4, #0097a7);
+                                 height: 100%; width: 0%; transition: width 0.3s; display: flex; align-items: center;
+                                 justify-content: center; color: white; font-weight: bold; font-size: 14px;">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div style="margin-bottom: 20px;">
+                        <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 5px;">
+                            <span>Taxa de Sucesso</span>
+                            <span id="apiTaxaSucesso">0%</span>
+                        </div>
+                        <div style="background: #e0e0e0; height: 20px; border-radius: 4px; overflow: hidden;">
+                            <div id="apiBarraSucesso" style="background: linear-gradient(90deg, #4caf50, #2e7d32);
+                                 height: 100%; width: 0%; transition: width 0.3s;">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="apiBotoesControle" style="display: flex; gap: 10px; justify-content: center; margin-bottom: 10px;">
+                        <button id="btnPausar" onclick="window.pausarScript()"
+                                style="padding: 10px 20px; background: #ff9800; color: white; border: none;
+                                       border-radius: 4px; cursor: pointer; font-weight: bold;">
+                            ⏸️ Pausar
+                        </button>
+                        <button id="btnCancelar" onclick="window.cancelarScript()"
+                                style="padding: 10px 20px; background: #f44336; color: white; border: none;
+                                       border-radius: 4px; cursor: pointer; font-weight: bold;">
+                            🛑 Cancelar
+                        </button>
+                    </div>
+
+                    <div id="apiBotoesFinais" style="display: none; margin-top: 20px; text-align: center;">
+                        <button onclick="document.getElementById('exportarCSVBtn').click()"
+                                style="padding: 10px 20px; background: #4caf50; color: white; border: none;
+                                       border-radius: 4px; cursor: pointer; margin-right: 10px;">
+                            💾 Exportar CSV
+                        </button>
+                        <button onclick="document.getElementById('apiDirectModal').remove()"
+                                style="padding: 10px 20px; background: #666; color: white; border: none;
+                                       border-radius: 4px; cursor: pointer;">
+                            ✖️ Fechar
+                        </button>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        document.body.appendChild(modal);
+
+        window.pausarScript = function() {
+            if (estado.pausado) {
+                continuarProcessamento();
+            } else {
+                pausarProcessamento();
+            }
+        };
+
+        window.cancelarScript = cancelarProcessamento;
+    }
+
+    function atualizarBotoesDuranteExecucao() {
+        const btnPausar = document.getElementById('btnPausar');
+        if (btnPausar) {
+            if (estado.pausado) {
+                btnPausar.textContent = '▶️ Continuar';
+                btnPausar.style.background = '#4caf50';
+            } else {
+                btnPausar.textContent = '⏸️ Pausar';
+                btnPausar.style.background = '#ff9800';
+            }
+        }
+    }
+
+    function atualizarModal(status, finalizado = false) {
+        const progresso = estado.totalBuscados > 0
+            ? Math.floor((estado.totalProcessados / estado.totalBuscados) * 100)
+            : 0;
+        const tempoDecorrido = Math.floor((Date.now() - estado.iniciado) / 1000);
+        const velocidade = tempoDecorrido > 0 ? Math.round((estado.totalProcessados / tempoDecorrido) * 60) : 0;
+        const taxaSucesso = estado.totalProcessados > 0
+            ? ((estado.totalSucesso / estado.totalProcessados) * 100).toFixed(1)
+            : 0;
+
+        const elementos = {
+            apiStatus: status || (estado.pausado ? '⏸️ PAUSADO' : 'Processando...'),
+            apiPaginas: `${estado.paginaAtual}/${estado.totalPaginas || '?'}`,
+            apiBuscados: estado.totalBuscados,
+            apiProcessados: estado.totalProcessados,
+            apiSucesso: estado.totalSucesso,
+            apiErros: estado.totalErro,
+            apiTimeouts: estado.totalTimeout,
+            apiPulados: estado.totalPulados,
+            apiWorkers: estado.concorrenciaAtual,
+            apiProgresso: `${progresso}%`,
+            apiTempo: `${tempoDecorrido}s`,
+            apiTaxaSucesso: `${taxaSucesso}%`
+        };
+
+        Object.entries(elementos).forEach(([id, valor]) => {
+            const el = document.getElementById(id);
+            if (el) el.textContent = valor;
+        });
+
+        const barra = document.getElementById('apiBarraProgresso');
+        if (barra) {
+            barra.style.width = `${progresso}%`;
+            barra.textContent = `${progresso}%`;
+        }
+
+        const barraSucesso = document.getElementById('apiBarraSucesso');
+        if (barraSucesso) {
+            barraSucesso.style.width = `${taxaSucesso}%`;
+        }
+
+        if (finalizado) {
+            const controles = document.getElementById('apiBotoesControle');
+            const finais = document.getElementById('apiBotoesFinais');
+            if (controles) controles.style.display = 'none';
+            if (finais) finais.style.display = 'block';
+        }
+    }
+
+    function fecharModal() {
+        const modal = document.getElementById('apiDirectModal');
+        if (modal) modal.remove();
+    }
+
+    function exportarCSV() {
+        const linhas = [
+            ['ID', 'CPF', 'Vacina', 'Status', 'HTTP Status', 'Tentativa', 'Erro', 'Timestamp'].join(';')
+        ];
+
+        estado.resultados.forEach(r => {
+            linhas.push([
+                r.id,
+                r.cpf,
+                r.vacina,
+                r.status,
+                r.statusCode,
+                r.tentativa,
+                (r.erro || '').replace(/;/g, ','),
+                r.timestamp
+            ].join(';'));
+        });
+
+        const resumo = checkpointManager.getResumo();
+
+        linhas.push('');
+        linhas.push('ESTATÍSTICAS DESTA EXECUÇÃO');
+        linhas.push(`Total Buscados;${estado.totalBuscados}`);
+        linhas.push(`Total Páginas;${estado.paginaAtual}`);
+        linhas.push(`Total Processados;${estado.totalProcessados}`);
+        linhas.push(`Total Pulados (Sucesso Anterior);${estado.totalPulados}`);
+        linhas.push(`Sucesso;${estado.totalSucesso}`);
+        linhas.push(`Erros;${estado.totalErro}`);
+        linhas.push(`Timeouts;${estado.totalTimeout}`);
+        linhas.push(`Retentativas;${estado.totalRetentativas}`);
+        linhas.push(`Tempo Total;${Math.floor((Date.now() - estado.iniciado) / 1000)}s`);
+        linhas.push(`Velocidade;${Math.round((estado.totalProcessados / ((Date.now() - estado.iniciado) / 1000)) * 60)} reg/min`);
+        linhas.push(`Taxa Sucesso;${((estado.totalSucesso / estado.totalProcessados) * 100).toFixed(1)}%`);
+
+        linhas.push('');
+        linhas.push('CHECKPOINT PERMANENTE');
+        linhas.push(`Total IDs com Sucesso;${resumo.idsSucesso}`);
+        linhas.push(`Total Execuções;${resumo.totalExecucoes}`);
+
+        if (CONFIG.habilitarFiltroData) {
+            linhas.push('');
+            linhas.push('FILTRO DE PERÍODO');
+            linhas.push(`Data Início;${CONFIG.dataInicio}`);
+            linhas.push(`Data Fim;${CONFIG.dataFim}`);
+        }
+
+        const csv = '\uFEFF' + linhas.join('\n');
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = `reenvio_api_v13.3.3_${new Date().toISOString().split('T')[0]}.csv`;
+        link.id = 'exportarCSVBtn';
+        link.click();
+
+        console.log('💾 CSV exportado!');
+    }
+
+    // ============================================
+    // ⚙️ CONFIGURAÇÕES COM FILTRO DE DATA
+    // ============================================
+
+    function abrirConfiguracoes() {
+        const modalConfig = document.createElement('div');
+        modalConfig.id = 'modalConfiguracoes';
+        modalConfig.innerHTML = `
+            <div style="position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+                        background: rgba(0,0,0,0.7); z-index: 999999; display: flex;
+                        align-items: center; justify-content: center;">
+                <div style="background: white; padding: 30px; border-radius: 8px;
+                            width: 600px; max-height: 90vh; overflow-y: auto; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
+                    <h2 style="margin: 0 0 20px 0; color: #00bcd4;">⚙️ Configurações</h2>
+
+                    <div style="margin-bottom: 20px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: bold;">
+                            ⚡ Concorrência Inicial:
+                        </label>
+                        <input type="number" id="cfgConcorrenciaInicial" value="${CONFIG.concorrenciaInicial}"
+                               min="1" max="100"
+                               style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+
+                    <div style="margin-bottom: 20px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: bold;">
+                            🚀 Concorrência Máxima:
+                        </label>
+                        <input type="number" id="cfgConcorrenciaMaxima" value="${CONFIG.concorrenciaMaxima}"
+                               min="1" max="200"
+                               style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+
+                    <div style="margin-bottom: 20px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: bold;">
+                            📄 Registros por Página:
+                        </label>
+                        <input type="number" id="cfgRegistrosPorPagina" value="${CONFIG.registrosPorPagina}"
+                               min="10" max="1000" step="10"
+                               style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                        <small style="color: #666;">⚠️ Recomendado: 15 (mesmo valor da aplicação)</small>
+                    </div>
+
+                    <div style="margin-bottom: 20px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: bold;">
+                            🔄 Máximo de Retentativas:
+                        </label>
+                        <input type="number" id="cfgMaxRetentativas" value="${CONFIG.maxRetentativas}"
+                               min="0" max="5"
+                               style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                    </div>
+
+                    <div style="margin-bottom: 20px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: bold;">
+                            📄 Limite Máximo de Páginas:
+                        </label>
+                        <input type="number" id="cfgLimitePaginas" value="${CONFIG.limiteMaximoPaginas}"
+                               min="10" max="1000" step="10"
+                               style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                        <small style="color: #666;">Segurança para não buscar infinitamente</small>
+                    </div>
+
+                    <div style="margin-bottom: 20px;">
+                        <label style="display: flex; align-items: center; cursor: pointer;">
+                            <input type="checkbox" id="cfgAjusteAuto" ${CONFIG.ajusteAutomatico ? 'checked' : ''}
+                                   style="margin-right: 10px; width: 20px; height: 20px; cursor: pointer;">
+                            <span style="font-weight: bold;">🎯 Ajuste Automático de Concorrência</span>
+                        </label>
+                    </div>
+
+                    <div style="margin-bottom: 20px; background: #e3f2fd; padding: 15px; border-radius: 4px;">
+                        <label style="display: flex; align-items: center; cursor: pointer;">
+                            <input type="checkbox" id="cfgCheckpoint" ${CONFIG.habilitarCheckpoint ? 'checked' : ''}
+                                   style="margin-right: 10px; width: 20px; height: 20px; cursor: pointer;">
+                            <span style="font-weight: bold;">💾 Checkpoint Permanente</span>
+                        </label>
+                        <small style="color: #666; display: block; margin-top: 5px;">
+                            ✅ Salva apenas sucessos<br>
+                            ✅ Acumula entre execuções<br>
+                            ✅ Nunca limpa automaticamente
+                        </small>
+                    </div>
+
+                    <hr style="margin: 25px 0; border: none; border-top: 2px solid #e0e0e0;">
+
+                    <!-- ✨ NOVO: Filtro de Período de Datas -->
+                    <div style="margin-bottom: 20px; background: #fff3e0; padding: 15px; border-radius: 4px; border: 2px solid #ff9800;">
+                        <label style="display: flex; align-items: center; cursor: pointer; margin-bottom: 15px;">
+                            <input type="checkbox" id="cfgFiltroData" ${CONFIG.habilitarFiltroData ? 'checked' : ''}
+                                   onchange="document.getElementById('divDatasConfig').style.display = this.checked ? 'block' : 'none'"
+                                   style="margin-right: 10px; width: 20px; height: 20px; cursor: pointer;">
+                            <span style="font-weight: bold; font-size: 16px;">📅 Filtro de Período de Datas</span>
+                        </label>
+
+                        <div id="divDatasConfig" style="display: ${CONFIG.habilitarFiltroData ? 'block' : 'none'};">
+                            <div style="margin-bottom: 15px;">
+                                <label style="display: block; margin-bottom: 5px; font-weight: bold; color: #555;">
+                                    📆 Data Início:
+                                </label>
+                                <input type="date" id="cfgDataInicio" value="${CONFIG.dataInicio}"
+                                       style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+                                <small style="color: #666;">Data da vacinação (início do período)</small>
+                            </div>
+
+                            <div style="margin-bottom: 10px;">
+                                <label style="display: block; margin-bottom: 5px; font-weight: bold; color: #555;">
+                                    📆 Data Fim:
+                                </label>
+                                <input type="date" id="cfgDataFim" value="${CONFIG.dataFim}"
+                                       style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+                                <small style="color: #666;">Data da vacinação (fim do período)</small>
+                            </div>
+
+                            <div style="background: #e8f5e9; padding: 10px; border-radius: 4px; margin-top: 10px;">
+                                <small style="color: #2e7d32; font-weight: bold;">
+                                    💡 Dica: Use este filtro para processar registros de um período específico.<br>
+                                    ⚠️ Desmarque para buscar TODOS os registros (sem filtro de data).
+                                </small>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                        <button onclick="document.getElementById('modalConfiguracoes').remove()"
+                                style="padding: 10px 20px; background: #666; color: white; border: none;
+                                       border-radius: 4px; cursor: pointer;">
+                            Cancelar
+                        </button>
+                        <button id="btnSalvarConfig"
+                                style="padding: 10px 20px; background: #4caf50; color: white; border: none;
+                                       border-radius: 4px; cursor: pointer; font-weight: bold;">
+                            💾 Salvar
+                        </button>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        document.body.appendChild(modalConfig);
+
+        document.getElementById('btnSalvarConfig').onclick = () => {
+            CONFIG.concorrenciaInicial = parseInt(document.getElementById('cfgConcorrenciaInicial').value);
+            CONFIG.concorrenciaMaxima = parseInt(document.getElementById('cfgConcorrenciaMaxima').value);
+            CONFIG.registrosPorPagina = parseInt(document.getElementById('cfgRegistrosPorPagina').value);
+            CONFIG.maxRetentativas = parseInt(document.getElementById('cfgMaxRetentativas').value);
+            CONFIG.limiteMaximoPaginas = parseInt(document.getElementById('cfgLimitePaginas').value);
+            CONFIG.ajusteAutomatico = document.getElementById('cfgAjusteAuto').checked;
+            CONFIG.habilitarCheckpoint = document.getElementById('cfgCheckpoint').checked;
+
+            // ✨ NOVO: Captura configurações de data
+            CONFIG.habilitarFiltroData = document.getElementById('cfgFiltroData').checked;
+            CONFIG.dataInicio = document.getElementById('cfgDataInicio').value;
+            CONFIG.dataFim = document.getElementById('cfgDataFim').value;
+
+            // Validação de datas
+            if (CONFIG.habilitarFiltroData) {
+                const inicio = new Date(CONFIG.dataInicio);
+                const fim = new Date(CONFIG.dataFim);
+
+                if (inicio > fim) {
+                    alert('⚠️ Data de início não pode ser maior que data de fim!');
+                    return;
+                }
+
+                const hoje = new Date();
+                hoje.setHours(0, 0, 0, 0);
+
+                if (fim > hoje) {
+                    if (!confirm(
+                        '⚠️ Data de fim está no futuro!\n\n' +
+                        `Data fim: ${CONFIG.dataFim}\n` +
+                        `Hoje: ${hoje.toISOString().split('T')[0]}\n\n` +
+                        'Continuar mesmo assim?'
+                    )) {
                         return;
                     }
                 }
+            }
 
-                criarModalConfiguracao();
-            });
+            localStorage.setItem('RNDS_CONFIG', JSON.stringify(CONFIG));
 
-            const btnMemoria = document.createElement('button');
-            btnMemoria.innerHTML = '🗑️ Limpar';
-            btnMemoria.title = 'Limpar toda a memória';
-            btnMemoria.style.cssText = 'padding: 8px 12px; background: #f44336; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 12px; transition: opacity 0.2s;';
-            btnMemoria.addEventListener('mouseenter', function() { this.style.opacity = '0.8'; });
-            btnMemoria.addEventListener('mouseleave', function() { this.style.opacity = '1'; });
-            btnMemoria.addEventListener('click', limparMemoria);
+            let msg = '✅ Configurações salvas!';
+            if (CONFIG.habilitarFiltroData) {
+                msg += `\n\n📅 Filtro de período ATIVO:\n${CONFIG.dataInicio} até ${CONFIG.dataFim}`;
+            } else {
+                msg += '\n\n📅 Filtro de período DESATIVADO (buscará todos os registros)';
+            }
 
-            const btnHistorico = document.createElement('button');
-            btnHistorico.innerHTML = '🔄 Limpar Sucessos';
-            btnHistorico.title = 'Limpar apenas histórico de sucessos';
-            btnHistorico.style.cssText = 'padding: 8px 12px; background: #ff9800; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 12px; transition: opacity 0.2s;';
-            btnHistorico.addEventListener('mouseenter', function() { this.style.opacity = '0.8'; });
-            btnHistorico.addEventListener('mouseleave', function() { this.style.opacity = '1'; });
-            btnHistorico.addEventListener('click', limparApenasHistoricoSucesso);
+            alert(msg);
+            document.getElementById('modalConfiguracoes').remove();
 
-            const btnCopiar = document.createElement('button');
-            btnCopiar.innerHTML = '📋 Stats';
-            btnCopiar.title = 'Copiar estatísticas';
-            btnCopiar.style.cssText = 'padding: 8px 12px; background: #2196f3; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 12px; transition: opacity 0.2s;';
-            btnCopiar.addEventListener('mouseenter', function() { this.style.opacity = '0.8'; });
-            btnCopiar.addEventListener('mouseleave', function() { this.style.opacity = '1'; });
-            btnCopiar.addEventListener('click', copiarEstatisticas);
-
-            const btnCSV = document.createElement('button');
-            btnCSV.innerHTML = '📄 CSV';
-            btnCSV.title = 'Exportar relatório CSV';
-            btnCSV.style.cssText = 'padding: 8px 12px; background: #4caf50; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 12px; transition: opacity 0.2s;';
-            btnCSV.addEventListener('mouseenter', function() { this.style.opacity = '0.8'; });
-            btnCSV.addEventListener('mouseleave', function() { this.style.opacity = '1'; });
-            btnCSV.addEventListener('click', exportarRelatorioCSV);
-
-            wrapper.appendChild(botao);
-            wrapper.appendChild(btnMemoria);
-            wrapper.appendChild(btnHistorico);
-            wrapper.appendChild(btnCopiar);
-            wrapper.appendChild(btnCSV);
-
-            container.appendChild(wrapper);
-
-            botaoAdicionado = true;
-            clearInterval(intervalo);
-
-            console.log('✅ Botões v11.11 adicionados com sucesso!');
-            console.log('📍 Local: ' + (container.id || container.className || 'container genérico'));
-        }
-    }, 1000);
-
-    setTimeout(function() {
-        if (!botaoAdicionado) {
-            console.warn('⚠️ Toolbar não encontrada após 30s, criando container fixo...');
-            clearInterval(intervalo);
-
-            const containerFixo = document.createElement('div');
-            containerFixo.id = 'container-botoes-premium';
-            containerFixo.style.cssText = 'position: fixed; top: 10px; right: 10px; z-index: 99999; background: white; padding: 10px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3);';
-            document.body.appendChild(containerFixo);
-
-            botaoAdicionado = false;
-            adicionarBotaoInterface();
-        }
-    }, 30000);
-}
-
-
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', adicionarBotaoInterface);
-    } else {
-        adicionarBotaoInterface();
+            console.log('⚙️ Novas configurações:', CONFIG);
+        };
     }
 
-    carregarDadosPersistentes();
+    function carregarConfiguracoes() {
+        const configSalva = localStorage.getItem('RNDS_CONFIG');
+        if (configSalva) {
+            try {
+                const config = JSON.parse(configSalva);
+                Object.assign(CONFIG, config);
+                console.log('✅ Configurações carregadas:', CONFIG);
+            } catch (e) {
+                console.warn('⚠️ Erro ao carregar configurações');
+            }
+        }
+    }
+
+    function gerenciarCheckpoint() {
+        const resumo = checkpointManager.getResumo();
+
+        if (!resumo) {
+            alert('ℹ️ Nenhum checkpoint encontrado');
+            return;
+        }
+
+        const historico = checkpointManager.getHistorico();
+        let mensagem = '💾 CHECKPOINT PERMANENTE\n\n' +
+                      `Data: ${resumo.dataCheckpoint.toLocaleString()}\n` +
+                      `IDs com SUCESSO: ${resumo.idsSucesso}\n` +
+                      `Execuções: ${resumo.totalExecucoes}\n\n`;
+
+        if (historico.length > 0) {
+            mensagem += 'HISTÓRICO:\n';
+            historico.slice(-5).forEach(h => {
+                mensagem += `  ${h.numero}. ${h.data} - ${h.sucessos} sucessos\n`;
+            });
+            mensagem += '\n';
+        }
+
+        mensagem +=
+            '✅ IDs com sucesso são PERMANENTES\n' +
+            '✅ Serão pulados em TODAS as execuções\n' +
+            '🔄 Erros/timeouts tentados novamente\n\n' +
+            'Deseja LIMPAR o checkpoint permanente?';
+
+        if (confirm(mensagem)) {
+            checkpointManager.limpar();
+        }
+    }
+
+    // ============================================
+    // 🎨 TOOLBAR
+    // ============================================
+
+    function criarBotoesToolbar() {
+        const toolbar = document.querySelector('.main-theme-options');
+        if (!toolbar) {
+            console.log('⏳ Aguardando toolbar...');
+            setTimeout(criarBotoesToolbar, 500);
+            return;
+        }
+
+        console.log('✅ Toolbar encontrada!');
+
+        const divider = document.createElement('nab-divider');
+        divider.setAttribute('role', 'separator');
+        divider.className = 'nab-divider nab-divider-white nab-divider-vertical';
+        divider.setAttribute('aria-orientation', 'vertical');
+
+        const btnToken = document.createElement('button');
+        btnToken.id = 'btnVerToken';
+        btnToken.className = 'nab-focus-indicator nab-icon-button nab-button-base';
+        btnToken.setAttribute('nab-icon-button', '');
+        btnToken.title = 'Ver/Inserir Token';
+        btnToken.innerHTML = `
+            <span class="nab-button-wrapper">
+                <span class="icon-emoji" style="font-size: 20px; color: #ff9800;">🔑</span>
+            </span>
+        `;
+        btnToken.onclick = () => {
+            if (TOKEN_GLOBAL) {
+                const copiar = confirm(`🔑 TOKEN:\n\n${TOKEN_GLOBAL}\n\n\nCopiar?`);
+                if (copiar) {
+                    navigator.clipboard.writeText(TOKEN_GLOBAL);
+                    alert('✅ Token copiado!');
+                }
+            } else {
+                solicitarTokenManual();
+            }
+        };
+
+        const btnCheckpoint = document.createElement('button');
+        btnCheckpoint.id = 'btnCheckpoint';
+        btnCheckpoint.className = 'nab-focus-indicator nab-icon-button nab-button-base';
+        btnCheckpoint.setAttribute('nab-icon-button', '');
+        btnCheckpoint.title = 'Gerenciar Checkpoint';
+        btnCheckpoint.innerHTML = `
+            <span class="nab-button-wrapper">
+                <span class="icon-emoji" style="font-size: 20px; color: #2196f3;">💾</span>
+            </span>
+        `;
+        btnCheckpoint.onclick = gerenciarCheckpoint;
+
+        const btnConfig = document.createElement('button');
+        btnConfig.id = 'btnConfiguracoes';
+        btnConfig.className = 'nab-focus-indicator nab-icon-button nab-button-base';
+        btnConfig.setAttribute('nab-icon-button', '');
+        btnConfig.title = 'Configurações';
+        btnConfig.innerHTML = `
+            <span class="nab-button-wrapper">
+                <span class="icon-emoji" style="font-size: 20px; color: #9c27b0;">⚙️</span>
+            </span>
+        `;
+        btnConfig.onclick = abrirConfiguracoes;
+
+        const btnReenviar = document.createElement('button');
+        btnReenviar.id = 'btnReenviarAPI';
+        btnReenviar.className = 'nab-focus-indicator nab-icon-button nab-button-base';
+        btnReenviar.setAttribute('nab-icon-button', '');
+        btnReenviar.title = 'Reenviar Vacinas';
+        btnReenviar.innerHTML = `
+            <span class="nab-button-wrapper">
+                <span class="icon-emoji" style="font-size: 20px; color: #00bcd4;">🚀</span>
+            </span>
+        `;
+        btnReenviar.onclick = iniciarReenvioAPI;
+
+        const btnGlobal = toolbar.querySelector('button[nab-icon-button]');
+        if (btnGlobal) {
+            toolbar.insertBefore(divider, btnGlobal);
+            toolbar.insertBefore(btnToken, btnGlobal);
+            toolbar.insertBefore(btnCheckpoint, btnGlobal);
+            toolbar.insertBefore(btnConfig, btnGlobal);
+            toolbar.insertBefore(btnReenviar, btnGlobal);
+        } else {
+            toolbar.appendChild(divider);
+            toolbar.appendChild(btnToken);
+            toolbar.appendChild(btnCheckpoint);
+            toolbar.appendChild(btnConfig);
+            toolbar.appendChild(btnReenviar);
+        }
+
+        console.log('✅ Botões adicionados!');
+        atualizarBotaoToken(!!TOKEN_GLOBAL);
+
+        if (checkpointManager.getResumo() && checkpointManager.checkpoint.idsSucesso.length > 0) {
+            const icon = btnCheckpoint.querySelector('span.icon-emoji');
+            if (icon) icon.style.color = '#4caf50';
+        }
+    }
+
+    // ============================================
+    // 🚀 INICIALIZAÇÃO
+    // ============================================
+
+    function inicializar() {
+        console.log('');
+        console.log('═══════════════════════════════════════════════════════════');
+        console.log('🚀 SPRNDS - API Direct v13.3.3');
+        console.log('═══════════════════════════════════════════════════════════');
+        console.log('✨ NOVO NA v13.3.3:');
+        console.log('  • Filtro de período de datas configurável');
+        console.log('  • Data início/fim personalizáveis');
+        console.log('  • Checkpoint PERMANENTE mantido');
+        console.log('═══════════════════════════════════════════════════════════');
+        console.log('');
+
+        carregarConfiguracoes();
+        capturarToken();
+        criarBotoesToolbar();
+
+        const resumo = checkpointManager.getResumo();
+        if (resumo && resumo.idsSucesso > 0) {
+            console.log('💾 Checkpoint permanente detectado:');
+            console.log(`   • Data: ${resumo.dataCheckpoint.toLocaleString()}`);
+            console.log(`   • IDs com SUCESSO: ${resumo.idsSucesso}`);
+            console.log(`   • Execuções anteriores: ${resumo.totalExecucoes}`);
+            console.log('');
+        }
+
+        if (CONFIG.habilitarFiltroData) {
+            console.log('📅 Filtro de período ATIVO:');
+            console.log(`   • De: ${CONFIG.dataInicio}`);
+            console.log(`   • Até: ${CONFIG.dataFim}`);
+            console.log('');
+        } else {
+            console.log('📅 Filtro de período DESATIVADO (buscando todos)');
+            console.log('');
+        }
+
+        console.log('💡 Sistema pronto!');
+        console.log('');
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', inicializar);
+    } else {
+        inicializar();
+    }
 
 })();
