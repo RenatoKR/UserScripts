@@ -1213,7 +1213,7 @@
     }
 
     // ============================================
-    // ⚙️ CONFIGURAÇÕES COM FILTRO DE DATA
+    // ⚙️ CONFIGURAÇÕES COM FILTRO DE DATA E TIMEOUT
     // ============================================
 
     function abrirConfiguracoes() {
@@ -1253,6 +1253,19 @@
                                min="10" max="1000" step="10"
                                style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
                         <small style="color: #666;">⚠️ Recomendado: 15 (mesmo valor da aplicação)</small>
+                    </div>
+
+                    <div style="margin-bottom: 20px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: bold;">
+                            ⏱️ Timeout por Requisição (ms):
+                        </label>
+                        <input type="number" id="cfgTimeoutRequisicao" value="${CONFIG.timeoutRequisicao}"
+                               min="5000" max="120000" step="1000"
+                               style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                        <small style="color: #666;">
+                            Tempo máximo de espera por requisição (ms). 
+                            <strong>${(CONFIG.timeoutRequisicao / 1000)}s atual</strong>
+                        </small>
                     </div>
 
                     <div style="margin-bottom: 20px;">
@@ -1356,12 +1369,30 @@
             CONFIG.concorrenciaInicial = parseInt(document.getElementById('cfgConcorrenciaInicial').value);
             CONFIG.concorrenciaMaxima = parseInt(document.getElementById('cfgConcorrenciaMaxima').value);
             CONFIG.registrosPorPagina = parseInt(document.getElementById('cfgRegistrosPorPagina').value);
+            CONFIG.timeoutRequisicao = parseInt(document.getElementById('cfgTimeoutRequisicao').value);
             CONFIG.maxRetentativas = parseInt(document.getElementById('cfgMaxRetentativas').value);
             CONFIG.limiteMaximoPaginas = parseInt(document.getElementById('cfgLimitePaginas').value);
             CONFIG.ajusteAutomatico = document.getElementById('cfgAjusteAuto').checked;
             CONFIG.habilitarCheckpoint = document.getElementById('cfgCheckpoint').checked;
 
-            // ✨ NOVO: Captura configurações de data
+            // Validação de timeout
+            if (CONFIG.timeoutRequisicao < 5000) {
+                alert('⚠️ Timeout muito baixo! Mínimo recomendado: 5000ms (5s)');
+                return;
+            }
+
+            if (CONFIG.timeoutRequisicao > 120000) {
+                if (!confirm(
+                    '⚠️ Timeout muito alto!\n\n' +
+                    `Timeout configurado: ${CONFIG.timeoutRequisicao}ms (${CONFIG.timeoutRequisicao/1000}s)\n\n` +
+                    'Timeouts altos podem travar o processamento se houver problemas na rede.\n\n' +
+                    'Continuar mesmo assim?'
+                )) {
+                    return;
+                }
+            }
+
+            // Captura configurações de data
             CONFIG.habilitarFiltroData = document.getElementById('cfgFiltroData').checked;
             CONFIG.dataInicio = document.getElementById('cfgDataInicio').value;
             CONFIG.dataFim = document.getElementById('cfgDataFim').value;
@@ -1393,11 +1424,13 @@
 
             localStorage.setItem('RNDS_CONFIG', JSON.stringify(CONFIG));
 
-            let msg = '✅ Configurações salvas!';
+            let msg = '✅ Configurações salvas!\n\n';
+            msg += `⏱️ Timeout: ${CONFIG.timeoutRequisicao}ms (${CONFIG.timeoutRequisicao/1000}s)\n`;
+            
             if (CONFIG.habilitarFiltroData) {
-                msg += `\n\n📅 Filtro de período ATIVO:\n${CONFIG.dataInicio} até ${CONFIG.dataFim}`;
+                msg += `\n📅 Filtro de período ATIVO:\n${CONFIG.dataInicio} até ${CONFIG.dataFim}`;
             } else {
-                msg += '\n\n📅 Filtro de período DESATIVADO (buscará todos os registros)';
+                msg += '\n📅 Filtro de período DESATIVADO (buscará todos os registros)';
             }
 
             alert(msg);
@@ -1567,6 +1600,7 @@
         console.log('  • Filtro de período de datas configurável');
         console.log('  • Data início/fim personalizáveis');
         console.log('  • Checkpoint PERMANENTE mantido');
+        console.log('  • Timeout configurável na interface');
         console.log('═══════════════════════════════════════════════════════════');
         console.log('');
 
