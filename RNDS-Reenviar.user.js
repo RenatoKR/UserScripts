@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         SPRNDS - Reenviar v13.4.1
+// @name         SPRNDS - Reenviar v13.4.2
 // @namespace    http://tampermonkey.net/
-// @version      13.4.1
-// @description  Pool de workers dinâmico + Interface restaurada
+// @version      13.4.2
+// @description  Auto-tuning inteligente com análise de latência
 // @author       Renato Krebs Rosa
 // @match        *://*/rnds/*
 // @grant        none
@@ -32,7 +32,11 @@
         salvarCheckpointACada: 10,
         habilitarFiltroData: false,
         dataInicio: '2020-01-01',
-        dataFim: '2026-02-15'
+        dataFim: '2026-02-15',
+        // ✨ NOVOS: Auto-tuning inteligente
+        autoTuningAgressivo: false,
+        intervaloAnalise: 10,
+        logDetalhado: true
     };
 
     // ============================================
@@ -56,7 +60,7 @@
                     totalTimeout: 0,
                     totalRetentativas: 0
                 },
-                versao: '13.4.1',
+                versao: '13.4.2',
                 execucoes: []
             };
         }
@@ -211,7 +215,17 @@
         registros: [],
         resultados: [],
         workersAtivos: 0,
-        metricsWorkers: {}
+        metricsWorkers: {},
+        // ✨ NOVO: Métricas detalhadas de latência
+        metricsLatencia: {
+            historico: [],
+            p50: 0,
+            p95: 0,
+            p99: 0,
+            media: 0,
+            porConcorrencia: {}
+        },
+        ajustesHistorico: []
     };
 
     let TOKEN_GLOBAL = null;
@@ -531,8 +545,36 @@
         return todosRegistros;
     }
 
+    // ✨ NOVA: Registra latência no histórico
+    function registrarLatencia(tempo, isTimeout, statusCode) {
+        const metrica = {
+            tempo: tempo,
+            workers: estado.concorrenciaAtual,
+            timeout: isTimeout,
+            statusCode: statusCode,
+            timestamp: Date.now()
+        };
+        
+        estado.metricsLatencia.historico.push(metrica);
+        
+        if (estado.metricsLatencia.historico.length > 100) {
+            estado.metricsLatencia.historico.shift();
+        }
+        
+        const nivel = estado.concorrenciaAtual;
+        if (!estado.metricsLatencia.porConcorrencia[nivel]) {
+            estado.metricsLatencia.porConcorrencia[nivel] = [];
+        }
+        estado.metricsLatencia.porConcorrencia[nivel].push(metrica);
+        
+        if (estado.metricsLatencia.porConcorrencia[nivel].length > 50) {
+            estado.metricsLatencia.porConcorrencia[nivel].shift();
+        }
+    }
+
     async function reenviarVacina(registro, tentativa = 1) {
         const url = '/rnds/api/vaccine-sync/send-register';
+        const inicioReq = Date.now(); // ✨ MARCA INÍCIO
 
         try {
             const controller = new AbortController();
@@ -551,6 +593,10 @@
             });
 
             clearTimeout(timeoutId);
+            
+            // ✨ COLETA LATÊNCIA
+            const latencia = Date.now() - inicioReq;
+            registrarLatencia(latencia, false, response.status);
 
             const resultado = {
                 id: registro.id,
@@ -559,7 +605,8 @@
                 status: response.ok ? 'SUCESSO' : 'ERRO',
                 statusCode: response.status,
                 tentativa: tentativa,
-                timestamp: new Date().toISOString()
+                timestamp: new Date().toISOString(),
+                latencia: latencia // ✨ NOVO
             };
 
             if (response.ok) {
@@ -584,6 +631,12 @@
 
         } catch (erro) {
             const isTimeout = erro.name === 'AbortError';
+            const latencia = Date.now() - inicioReq;
+            
+            // ✨ REGISTRA TIMEOUT
+            if (isTimeout) {
+                registrarLatencia(latencia, true, 0);
+            }
 
             if (tentativa < CONFIG.maxRetentativas && !isTimeout) {
                 estado.totalRetentativas++;
@@ -605,7 +658,8 @@
                 statusCode: 0,
                 erro: erro.message,
                 tentativa: tentativa,
-                timestamp: new Date().toISOString()
+                timestamp: new Date().toISOString(),
+                latencia: latencia
             };
 
             if (CONFIG.habilitarCheckpoint) {
@@ -616,7 +670,89 @@
         }
     }
 
-    // ✨ Pool de workers dinâmico da v13.4.0
+    // ✨ NOVA: Calcula percentil
+    function percentil(arr, p) {
+        if (arr.length === 0) return 0;
+        const sorted = [...arr].sort((a, b) => a - b);
+        const index = Math.max(0, Math.ceil(sorted.length * p) - 1);
+        return sorted[index];
+    }
+
+    // ✨ NOVA: Analisa performance atual
+    function analisarPerformance() {
+        const hist = estado.metricsLatencia.historico;
+        
+        if (hist.length < 10) {
+            return null;
+        }
+        
+        const temposValidos = hist
+            .filter(m => !m.timeout)
+            .map(m => m.tempo);
+        
+        const totalTimeouts = hist.filter(m => m.timeout).length;
+        const taxaTimeout = (totalTimeouts / hist.length) * 100;
+        
+        if (temposValidos.length === 0) {
+            return {
+                workers: estado.concorrenciaAtual,
+                p50: CONFIG.timeoutRequisicao,
+                p95: CONFIG.timeoutRequisicao,
+                p99: CONFIG.timeoutRequisicao,
+                media: CONFIG.timeoutRequisicao,
+                taxaTimeout: 100,
+                throughputTeorico: 0,
+                amostra: hist.length
+            };
+        }
+        
+        const p50 = percentil(temposValidos, 0.50);
+        const p95 = percentil(temposValidos, 0.95);
+        const p99 = percentil(temposValidos, 0.99);
+        const media = temposValidos.reduce((a, b) => a + b, 0) / temposValidos.length;
+        
+        const throughputTeorico = estado.concorrenciaAtual / (media / 1000);
+        
+        return {
+            workers: estado.concorrenciaAtual,
+            p50: Math.round(p50),
+            p95: Math.round(p95),
+            p99: Math.round(p99),
+            media: Math.round(media),
+            taxaTimeout: parseFloat(taxaTimeout.toFixed(2)),
+            throughputTeorico: parseFloat(throughputTeorico.toFixed(2)),
+            amostra: hist.length
+        };
+    }
+
+    // ✨ NOVA: Detecta tendência de latência
+    function detectarTendenciaLatencia() {
+        const hist = estado.metricsLatencia.historico;
+        if (hist.length < 20) return 'estavel';
+        
+        const primeira_metade = hist.slice(0, Math.floor(hist.length / 2))
+            .filter(m => !m.timeout)
+            .map(m => m.tempo);
+        
+        const segunda_metade = hist.slice(Math.floor(hist.length / 2))
+            .filter(m => !m.timeout)
+            .map(m => m.tempo);
+        
+        if (primeira_metade.length === 0 || segunda_metade.length === 0) {
+            return 'estavel';
+        }
+        
+        const media1 = primeira_metade.reduce((a, b) => a + b, 0) / primeira_metade.length;
+        const media2 = segunda_metade.reduce((a, b) => a + b, 0) / segunda_metade.length;
+        
+        const variacao = ((media2 - media1) / media1) * 100;
+        
+        if (variacao > 20) return 'crescente';
+        if (variacao < -20) return 'decrescente';
+        return 'estavel';
+    }
+
+    // Pool de workers dinâmico
     async function processarComPool(registros) {
         const inicio = Date.now();
         const resultados = [];
@@ -631,6 +767,7 @@
         console.log('═══════════════════════════════════════════════════════════');
         console.log('💡 Cada worker pega o próximo item assim que termina');
         console.log('💡 Zero tempo ocioso - máxima eficiência');
+        console.log('✨ Auto-tuning inteligente com análise de latência');
         console.log('');
         
         async function worker(workerId) {
@@ -694,7 +831,8 @@
                     atualizarModal();
                 }
                 
-                if (CONFIG.ajusteAutomatico && resultadosRecentes.length >= 10) {
+                // ✨ Ajuste inteligente a cada X requisições
+                if (CONFIG.ajusteAutomatico && resultadosRecentes.length >= CONFIG.intervaloAnalise) {
                     ajustarConcorrencia(resultadosRecentes);
                     resultadosRecentes.length = 0;
                 }
@@ -738,26 +876,170 @@
         return resultados;
     }
 
+    // ✨ REFINADO: Auto-tuning inteligente com 7 regras
     function ajustarConcorrencia(resultadosRecentes) {
         if (resultadosRecentes.length === 0) return;
         
-        const taxaSucesso = resultadosRecentes.filter(r => r.status === 'SUCESSO').length / resultadosRecentes.length;
+        const analise = analisarPerformance();
+        
+        if (!analise) {
+            if (CONFIG.logDetalhado) {
+                console.log('📊 Dados insuficientes para análise (< 10 amostras)');
+            }
+            return;
+        }
+        
         const concorrenciaAnterior = estado.concorrenciaAtual;
-
-        if (taxaSucesso > 0.95 && estado.concorrenciaAtual < CONFIG.concorrenciaMaxima) {
-            estado.concorrenciaAtual = Math.min(
-                estado.concorrenciaAtual + 5,
-                CONFIG.concorrenciaMaxima
-            );
-            console.log(`⚡ Concorrência aumentada: ${concorrenciaAnterior} → ${estado.concorrenciaAtual} (taxa: ${(taxaSucesso*100).toFixed(1)}%)`);
-        } else if (taxaSucesso < 0.80 && estado.concorrenciaAtual > CONFIG.concorrenciaMinima) {
-            estado.concorrenciaAtual = Math.max(
-                estado.concorrenciaAtual - 5,
+        const tendencia = detectarTendenciaLatencia();
+        
+        if (CONFIG.logDetalhado) {
+            console.log('');
+            console.log('═══════════════════════════════════════════════════════════');
+            console.log('📊 ANÁLISE DE PERFORMANCE DETALHADA');
+            console.log('═══════════════════════════════════════════════════════════');
+            console.log(`⚙️  Workers Atual: ${analise.workers}`);
+            console.log(`📈 Latências:`);
+            console.log(`   • P50 (mediana): ${analise.p50}ms`);
+            console.log(`   • P95: ${analise.p95}ms`);
+            console.log(`   • P99: ${analise.p99}ms`);
+            console.log(`   • Média: ${analise.media}ms`);
+            console.log(`⏱️  Timeout Config: ${CONFIG.timeoutRequisicao}ms`);
+            console.log(`❌ Taxa Timeout: ${analise.taxaTimeout}%`);
+            console.log(`📉 Tendência: ${tendencia}`);
+            console.log(`⚡ Throughput Teórico: ${analise.throughputTeorico} req/s`);
+            console.log(`📊 Amostra: ${analise.amostra} requisições`);
+        }
+        
+        let decisao = null;
+        let novoValor = concorrenciaAnterior;
+        
+        // REGRA 1: P95 muito próximo do timeout (CRÍTICO)
+        if (analise.p95 > CONFIG.timeoutRequisicao * 0.85) {
+            const reducao = Math.ceil(concorrenciaAnterior * 0.3);
+            novoValor = Math.max(
+                concorrenciaAnterior - reducao,
                 CONFIG.concorrenciaMinima
             );
-            console.log(`⚠️ Concorrência reduzida: ${concorrenciaAnterior} → ${estado.concorrenciaAtual} (taxa: ${(taxaSucesso*100).toFixed(1)}%)`);
+            decisao = {
+                acao: 'REDUÇÃO_CRÍTICA',
+                razao: `P95 (${analise.p95}ms) muito próximo do timeout (${CONFIG.timeoutRequisicao}ms)`,
+                reducao: reducao
+            };
         }
-
+        
+        // REGRA 2: Taxa de timeout alta
+        else if (analise.taxaTimeout > 5) {
+            novoValor = Math.max(
+                concorrenciaAnterior - 5,
+                CONFIG.concorrenciaMinima
+            );
+            decisao = {
+                acao: 'REDUÇÃO_POR_TIMEOUT',
+                razao: `Taxa de timeout (${analise.taxaTimeout}%) acima de 5%`,
+                reducao: 5
+            };
+        }
+        
+        // REGRA 3: P95 crescendo + latência em tendência crescente
+        else if (analise.p95 > CONFIG.timeoutRequisicao * 0.6 && tendencia === 'crescente') {
+            novoValor = Math.max(
+                concorrenciaAnterior - 3,
+                CONFIG.concorrenciaMinima
+            );
+            decisao = {
+                acao: 'REDUÇÃO_PREVENTIVA',
+                razao: `P95 (${analise.p95}ms) alto e latência crescente`,
+                reducao: 3
+            };
+        }
+        
+        // REGRA 4: Timeouts moderados (2-5%)
+        else if (analise.taxaTimeout > 2) {
+            novoValor = Math.max(
+                concorrenciaAnterior - 2,
+                CONFIG.concorrenciaMinima
+            );
+            decisao = {
+                acao: 'REDUÇÃO_MODERADA',
+                razao: `Taxa de timeout moderada (${analise.taxaTimeout}%)`,
+                reducao: 2
+            };
+        }
+        
+        // REGRA 5: Performance excelente
+        else if (
+            analise.p95 < CONFIG.timeoutRequisicao * 0.3 &&
+            analise.taxaTimeout < 0.5 &&
+            tendencia !== 'crescente' &&
+            concorrenciaAnterior < CONFIG.concorrenciaMaxima
+        ) {
+            novoValor = Math.min(
+                concorrenciaAnterior + 5,
+                CONFIG.concorrenciaMaxima
+            );
+            decisao = {
+                acao: 'AUMENTO_SEGURO',
+                razao: `P95 baixo (${analise.p95}ms), servidor respondendo rápido`,
+                aumento: 5
+            };
+        }
+        
+        // REGRA 6: Performance boa
+        else if (
+            analise.p95 < CONFIG.timeoutRequisicao * 0.5 &&
+            analise.taxaTimeout < 1 &&
+            tendencia === 'decrescente' &&
+            concorrenciaAnterior < CONFIG.concorrenciaMaxima
+        ) {
+            novoValor = Math.min(
+                concorrenciaAnterior + 3,
+                CONFIG.concorrenciaMaxima
+            );
+            decisao = {
+                acao: 'AUMENTO_CONSERVADOR',
+                razao: `Latência decrescente, performance boa`,
+                aumento: 3
+            };
+        }
+        
+        // REGRA 7: Ponto ótimo
+        else {
+            decisao = {
+                acao: 'MANTER',
+                razao: `Ponto de equilíbrio (P95: ${analise.p95}ms, Timeout: ${analise.taxaTimeout}%)`,
+            };
+        }
+        
+        if (novoValor !== concorrenciaAnterior) {
+            estado.concorrenciaAtual = novoValor;
+            
+            estado.ajustesHistorico.push({
+                timestamp: Date.now(),
+                de: concorrenciaAnterior,
+                para: novoValor,
+                decisao: decisao,
+                analise: analise
+            });
+            
+            if (CONFIG.logDetalhado) {
+                console.log('');
+                console.log(`🔄 DECISÃO: ${decisao.acao}`);
+                console.log(`📝 Razão: ${decisao.razao}`);
+                console.log(`⚙️  Workers: ${concorrenciaAnterior} → ${novoValor}`);
+                console.log('═══════════════════════════════════════════════════════════');
+                console.log('');
+            } else {
+                console.log(`🔄 ${decisao.acao}: ${concorrenciaAnterior} → ${novoValor} workers`);
+            }
+        } else {
+            if (CONFIG.logDetalhado) {
+                console.log(`✅ DECISÃO: ${decisao.acao}`);
+                console.log(`📝 Razão: ${decisao.razao}`);
+                console.log('═══════════════════════════════════════════════════════════');
+                console.log('');
+            }
+        }
+        
         atualizarModal();
     }
 
@@ -884,6 +1166,7 @@
         mensagemInicial +=
             `⚙️ CONFIGURAÇÕES:\\n` +
             `   • Pool de Workers: ${CONFIG.concorrenciaInicial} → ${CONFIG.concorrenciaMaxima}\\n` +
+            `   • Auto-tuning Inteligente: ${CONFIG.ajusteAutomatico ? 'ATIVO' : 'DESATIVADO'}\\n` +
             `   • Retry: ${CONFIG.maxRetentativas}x\\n` +
             `   • Checkpoint: ${CONFIG.habilitarCheckpoint ? 'ATIVO (permanente)' : 'DESATIVADO'}\\n`;
 
@@ -925,12 +1208,22 @@
             registros: [],
             resultados: [],
             workersAtivos: 0,
-            metricsWorkers: {}
+            metricsWorkers: {},
+            metricsLatencia: {
+                historico: [],
+                p50: 0,
+                p95: 0,
+                p99: 0,
+                media: 0,
+                porConcorrencia: {}
+            },
+            ajustesHistorico: []
         };
 
         criarModal();
-        console.log('🚀 Iniciando reenvio via API Direct v13.4.1...');
+        console.log('🚀 Iniciando reenvio via API Direct v13.4.2...');
         console.log(`🏊 Pool de Workers Dinâmico habilitado`);
+        console.log(`✨ Auto-tuning inteligente com análise de latência`);
         console.log(`💾 Checkpoint permanente: ${resumo ? resumo.idsSucesso : 0} IDs com sucesso`);
         if (CONFIG.habilitarFiltroData) {
             console.log(`📅 Período: ${CONFIG.dataInicio} até ${CONFIG.dataFim}`);
@@ -997,6 +1290,7 @@
             : 0;
 
         const resumo = checkpointManager.getResumo();
+        const analise = analisarPerformance();
 
         console.log('');
         console.log('═══════════════════════════════════════════════════════════');
@@ -1011,10 +1305,25 @@
         console.log(`    ⏱️ Tempo: ${tempoTotal}s (${Math.floor(tempoTotal/60)}min)`);
         console.log(`    ⚡ Velocidade: ${velocidade} reg/min`);
         console.log(`    📊 Taxa: ${taxaSucesso}%`);
+        
+        if (analise) {
+            console.log('');
+            console.log('  MÉTRICAS DE LATÊNCIA:');
+            console.log(`    📊 P50: ${analise.p50}ms | P95: ${analise.p95}ms | P99: ${analise.p99}ms`);
+            console.log(`    ⚡ Throughput final: ${analise.throughputTeorico} req/s`);
+        }
+        
         console.log('');
         console.log('  CHECKPOINT PERMANENTE:');
         console.log(`    💾 Total IDs com sucesso: ${resumo.idsSucesso}`);
         console.log(`    📊 Total execuções: ${resumo.totalExecucoes}`);
+        
+        if (estado.ajustesHistorico.length > 0) {
+            console.log('');
+            console.log('  AUTO-TUNING:');
+            console.log(`    🔄 Total de ajustes: ${estado.ajustesHistorico.length}`);
+        }
+        
         if (CONFIG.habilitarFiltroData) {
             console.log('');
             console.log('  FILTRO DE PERÍODO:');
@@ -1041,7 +1350,13 @@
             }
 
             textoCompleto +=
-                `  ⚡ Velocidade: ${velocidade} reg/min\\n` +
+                `  ⚡ Velocidade: ${velocidade} reg/min\\n`;
+                
+            if (analise) {
+                textoCompleto += `  📊 P95 final: ${analise.p95}ms\\n`;
+            }
+            
+            textoCompleto +=
                 `\\nCHECKPOINT PERMANENTE:\\n` +
                 `  💾 Total com sucesso: ${resumo.idsSucesso}\\n` +
                 `  📊 Total execuções: ${resumo.totalExecucoes}\\n`;
@@ -1065,7 +1380,7 @@
     }
 
     // ============================================
-    // 🎨 INTERFACE COM CONTROLES DINÂMICOS
+    // 🎨 INTERFACE COM MÉTRICAS AVANÇADAS
     // ============================================
 
     function criarModal() {
@@ -1076,11 +1391,12 @@
         modal.innerHTML = `
             <div style="position: fixed; top: 0; left: 0; width: 100%; height: 100%;
                         background: rgba(0,0,0,0.7); z-index: 999999; display: flex;
-                        align-items: center; justify-content: center;">
+                        align-items: center; justify-content: center; overflow-y: auto;">
                 <div style="background: white; padding: 30px; border-radius: 8px;
-                            min-width: 650px; max-width: 850px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
+                            min-width: 650px; max-width: 850px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+                            margin: 20px;">
                     <h2 style="margin: 0 0 20px 0; color: #00bcd4; text-align: center;">
-                        🚀 API Direct v13.4.1
+                        🚀 API Direct v13.4.2
                     </h2>
 
                     <div id="apiStatus" style="font-size: 14px; color: #666; margin-bottom: 15px; text-align: center; font-weight: bold;">
@@ -1177,6 +1493,39 @@
                         </div>
                     </div>
 
+                    <!-- ✨ NOVO: Métricas de Latência -->
+                    <div style="background: #fff3e0; padding: 15px; border-radius: 4px; margin-bottom: 20px; border-left: 4px solid #ff9800;">
+                        <div style="font-weight: bold; margin-bottom: 10px; color: #e65100;">
+                            📊 Métricas de Latência (últimas 100 req)
+                        </div>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; font-size: 12px;">
+                            <div>
+                                <strong>P50:</strong>
+                                <span id="apiP50" style="float: right; font-weight: bold; color: #2196f3;">-</span>
+                            </div>
+                            <div>
+                                <strong>P95:</strong>
+                                <span id="apiP95" style="float: right; font-weight: bold; color: #ff9800;">-</span>
+                            </div>
+                            <div>
+                                <strong>P99:</strong>
+                                <span id="apiP99" style="float: right; font-weight: bold; color: #f44336;">-</span>
+                            </div>
+                            <div>
+                                <strong>Média:</strong>
+                                <span id="apiMedia" style="float: right; font-weight: bold;">-</span>
+                            </div>
+                            <div>
+                                <strong>Throughput:</strong>
+                                <span id="apiThroughput" style="float: right; font-weight: bold; color: #4caf50;">-</span>
+                            </div>
+                            <div>
+                                <strong>Tendência:</strong>
+                                <span id="apiTendencia" style="float: right; font-weight: bold;">-</span>
+                            </div>
+                        </div>
+                    </div>
+
                     <div style="margin-bottom: 20px;">
                         <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 5px;">
                             <span>Progresso</span>
@@ -1267,6 +1616,10 @@
             ? ((estado.totalSucesso / estado.totalProcessados) * 100).toFixed(1)
             : 0;
 
+        // ✨ ANÁLISE DE PERFORMANCE
+        const analise = analisarPerformance();
+        const tendencia = detectarTendenciaLatencia();
+        
         const elementos = {
             apiStatus: status || (estado.pausado ? '⏸️ PAUSADO' : 'Processando...'),
             apiPaginas: `${estado.paginaAtual}/${estado.totalPaginas || '?'}`,
@@ -1280,13 +1633,34 @@
             apiWorkers: estado.concorrenciaAtual,
             apiProgresso: `${progresso}%`,
             apiTempo: `${tempoDecorrido}s`,
-            apiTaxaSucesso: `${taxaSucesso}%`
+            apiTaxaSucesso: `${taxaSucesso}%`,
+            // ✨ MÉTRICAS DE LATÊNCIA
+            apiP50: analise ? `${analise.p50}ms` : '-',
+            apiP95: analise ? `${analise.p95}ms` : '-',
+            apiP99: analise ? `${analise.p99}ms` : '-',
+            apiMedia: analise ? `${analise.media}ms` : '-',
+            apiThroughput: analise ? `${analise.throughputTeorico} req/s` : '-',
+            apiTendencia: tendencia === 'crescente' ? '📈' : 
+                         tendencia === 'decrescente' ? '📉' : '➡️'
         };
 
         Object.entries(elementos).forEach(([id, valor]) => {
             const el = document.getElementById(id);
             if (el) el.textContent = valor;
         });
+
+        // ✨ Código de cor para P95
+        const p95El = document.getElementById('apiP95');
+        if (p95El && analise) {
+            const ratio = analise.p95 / CONFIG.timeoutRequisicao;
+            if (ratio > 0.8) {
+                p95El.style.color = '#f44336';
+            } else if (ratio > 0.5) {
+                p95El.style.color = '#ff9800';
+            } else {
+                p95El.style.color = '#4caf50';
+            }
+        }
 
         const barra = document.getElementById('apiBarraProgresso');
         if (barra) {
@@ -1314,7 +1688,7 @@
 
     function exportarCSV() {
         const linhas = [
-            ['ID', 'CPF', 'Vacina', 'Status', 'HTTP Status', 'Tentativa', 'Erro', 'Timestamp'].join(';')
+            ['ID', 'CPF', 'Vacina', 'Status', 'HTTP Status', 'Tentativa', 'Latência (ms)', 'Erro', 'Timestamp'].join(';')
         ];
 
         estado.resultados.forEach(r => {
@@ -1325,12 +1699,14 @@
                 r.status,
                 r.statusCode,
                 r.tentativa,
+                r.latencia || '-',
                 (r.erro || '').replace(/;/g, ','),
                 r.timestamp
             ].join(';'));
         });
 
         const resumo = checkpointManager.getResumo();
+        const analise = analisarPerformance();
 
         linhas.push('');
         linhas.push('ESTATÍSTICAS DESTA EXECUÇÃO');
@@ -1345,6 +1721,16 @@
         linhas.push(`Tempo Total;${Math.floor((Date.now() - estado.iniciado) / 1000)}s`);
         linhas.push(`Velocidade;${Math.round((estado.totalProcessados / ((Date.now() - estado.iniciado) / 1000)) * 60)} reg/min`);
         linhas.push(`Taxa Sucesso;${((estado.totalSucesso / estado.totalProcessados) * 100).toFixed(1)}%`);
+
+        if (analise) {
+            linhas.push('');
+            linhas.push('MÉTRICAS DE LATÊNCIA');
+            linhas.push(`P50;${analise.p50}ms`);
+            linhas.push(`P95;${analise.p95}ms`);
+            linhas.push(`P99;${analise.p99}ms`);
+            linhas.push(`Média;${analise.media}ms`);
+            linhas.push(`Throughput;${analise.throughputTeorico} req/s`);
+        }
 
         linhas.push('');
         linhas.push('CHECKPOINT PERMANENTE');
@@ -1362,7 +1748,7 @@
         const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
         const link = document.createElement('a');
         link.href = URL.createObjectURL(blob);
-        link.download = `reenvio_api_v13.4.1_${new Date().toISOString().split('T')[0]}.csv`;
+        link.download = `reenvio_api_v13.4.2_${new Date().toISOString().split('T')[0]}.csv`;
         link.id = 'exportarCSVBtn';
         link.click();
 
@@ -1747,13 +2133,15 @@
     function inicializar() {
         console.log('');
         console.log('═══════════════════════════════════════════════════════════');
-        console.log('🚀 SPRNDS - API Direct v13.4.1');
+        console.log('🚀 SPRNDS - API Direct v13.4.2');
         console.log('═══════════════════════════════════════════════════════════');
-        console.log('✨ CORREÇÃO DA v13.4.1:');
-        console.log('  • Botões da interface RESTAURADOS');
-        console.log('  • Funções abrirConfiguracoes(), gerenciarCheckpoint() completas');
-        console.log('  • Mantém pool de workers dinâmico da v13.4.0');
-        console.log('  • Interface 100% funcional');
+        console.log('✨ NOVO NA v13.4.2:');
+        console.log('  • Auto-tuning inteligente com análise de latência');
+        console.log('  • Métricas P50, P95, P99 em tempo real');
+        console.log('  • 7 regras hierárquicas de decisão');
+        console.log('  • Detecção de tendências (crescente/decrescente/estável)');
+        console.log('  • Painel avançado com throughput e código de cor');
+        console.log('  • Decisões baseadas em dados reais, não apenas sucesso');
         console.log('═══════════════════════════════════════════════════════════');
         console.log('');
 
