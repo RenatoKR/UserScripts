@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         SPRNDS - Reenviar v13.3.3
+// @name         SPRNDS - Reenviar v13.3.4
 // @namespace    http://tampermonkey.net/
-// @version      13.3.3
-// @description  Filtro de período de datas + Checkpoint permanente
+// @version      13.3.4
+// @description  Ajuste dinâmico corrigido + Controles em tempo real
 // @author       Renato Krebs Rosa
 // @match        *://*/rnds/*
 // @grant        none
@@ -30,7 +30,6 @@
         buscarTodasPaginas: true,
         habilitarCheckpoint: true,
         salvarCheckpointACada: 10,
-        // ✨ NOVO: Filtro de período de datas
         habilitarFiltroData: false,
         dataInicio: '2020-01-01',
         dataFim: '2026-02-14'
@@ -57,7 +56,7 @@
                     totalTimeout: 0,
                     totalRetentativas: 0
                 },
-                versao: '13.3.3',
+                versao: '13.3.4',
                 execucoes: []
             };
         }
@@ -150,16 +149,16 @@
 
         limpar() {
             if (confirm(
-                '⚠️ ATENÇÃO: LIMPAR CHECKPOINT PERMANENTE\n\n' +
-                `Você tem ${this.checkpoint.idsSucesso.length} IDs com sucesso salvos.\n\n` +
-                'Ao limpar, TODOS os sucessos anteriores serão perdidos!\n' +
-                'Todos os registros serão processados novamente do zero.\n\n' +
+                '⚠️ ATENÇÃO: LIMPAR CHECKPOINT PERMANENTE\\n\\n' +
+                `Você tem ${this.checkpoint.idsSucesso.length} IDs com sucesso salvos.\\n\\n` +
+                'Ao limpar, TODOS os sucessos anteriores serão perdidos!\\n' +
+                'Todos os registros serão processados novamente do zero.\\n\\n' +
                 'Tem certeza que deseja LIMPAR?'
             )) {
                 localStorage.removeItem(this.STORAGE_KEY);
                 this.checkpoint = this.criar();
                 console.log('🗑️ Checkpoint limpo - todos os IDs serão reprocessados');
-                alert('✅ Checkpoint limpo com sucesso!\n\nNa próxima execução, todos os registros serão processados.');
+                alert('✅ Checkpoint limpo com sucesso!\\n\\nNa próxima execução, todos os registros serão processados.');
             }
         }
 
@@ -301,12 +300,12 @@
 
     function solicitarTokenManual() {
         const token = prompt(
-            '🔑 TOKEN NÃO DETECTADO\n\n' +
-            'Passos:\n' +
-            '1. F12 → Network\n' +
-            '2. Faça uma pesquisa\n' +
-            '3. Clique em "/api/vaccine-sync"\n' +
-            '4. Copie o header "Authorization"\n\n' +
+            '🔑 TOKEN NÃO DETECTADO\\n\\n' +
+            'Passos:\\n' +
+            '1. F12 → Network\\n' +
+            '2. Faça uma pesquisa\\n' +
+            '3. Clique em "/api/vaccine-sync"\\n' +
+            '4. Copie o header "Authorization"\\n\\n' +
             'Token:'
         );
 
@@ -349,10 +348,8 @@
     // ============================================
 
     async function buscarVacinasComErro(page = 0, limit = 15) {
-        // ✨ Monta URL com filtro de data opcional
         let url = `/rnds/api/vaccine-sync?sort=false:desc&page=${page}&limit=${limit}&sendStatus=ERROR`;
 
-        // Adiciona filtro de período se habilitado
         if (CONFIG.habilitarFiltroData) {
             url += `&between=vaccineDate,${CONFIG.dataInicio},${CONFIG.dataFim}`;
         }
@@ -532,8 +529,6 @@
         return todosRegistros;
     }
 
-    // (Continua após buscarTodasPaginas...)
-
     async function reenviarVacina(registro, tentativa = 1) {
         const url = '/rnds/api/vaccine-sync/send-register';
 
@@ -619,12 +614,12 @@
         }
     }
 
+    // ✨ CORRIGIDO: Ajuste dinâmico durante o processamento
     async function processarLote(registros) {
         const inicio = Date.now();
-        const concorrencia = estado.concorrenciaAtual;
         const resultados = [];
 
-        for (let i = 0; i < registros.length; i += concorrencia) {
+        for (let i = 0; i < registros.length; i += estado.concorrenciaAtual) {
             while (estado.pausado && !estado.cancelado) {
                 await new Promise(r => setTimeout(r, 500));
             }
@@ -634,7 +629,8 @@
                 break;
             }
 
-            const lote = registros.slice(i, i + concorrencia);
+            // Usa concorrência atual (pode ter mudado!)
+            const lote = registros.slice(i, i + estado.concorrenciaAtual);
 
             const loteFiltrado = lote.filter(r => {
                 if (CONFIG.habilitarCheckpoint && checkpointManager.jaTemSucesso(r.id)) {
@@ -653,16 +649,24 @@
             const promises = loteFiltrado.map(r => reenviarVacina(r));
             const resultadosLote = await Promise.allSettled(promises);
 
+            // Coleta resultados do lote
+            const resultadosLoteValidos = [];
             resultadosLote.forEach(r => {
                 if (r.status === 'fulfilled') {
                     resultados.push(r.value);
+                    resultadosLoteValidos.push(r.value);
                     estado.totalProcessados++;
                 }
             });
 
             atualizarModal();
 
-            if (i + concorrencia < registros.length) {
+            // ✨ AJUSTE AUTOMÁTICO APÓS CADA LOTE (não no final!)
+            if (CONFIG.ajusteAutomatico && resultadosLoteValidos.length > 0) {
+                ajustarConcorrencia(resultadosLoteValidos);
+            }
+
+            if (i + estado.concorrenciaAtual < registros.length) {
                 await new Promise(r => setTimeout(r, CONFIG.pausaEntreLotes));
             }
         }
@@ -676,29 +680,31 @@
         if (estado.ultimosTempos.length > 10) estado.ultimosTempos.shift();
         estado.tempoMedioPorLote = estado.ultimosTempos.reduce((a,b) => a+b, 0) / estado.ultimosTempos.length;
 
-        if (CONFIG.ajusteAutomatico) {
-            ajustarConcorrencia(resultados);
-        }
-
         return resultados;
     }
 
-    function ajustarConcorrencia(resultados) {
-        const taxaSucesso = resultados.filter(r => r.status === 'SUCESSO').length / resultados.length;
+    // ✨ CORRIGIDO: Calcula taxa apenas do lote atual
+    function ajustarConcorrencia(resultadosLote) {
+        const taxaSucesso = resultadosLote.filter(r => r.status === 'SUCESSO').length / resultadosLote.length;
+
+        const concorrenciaAnterior = estado.concorrenciaAtual;
 
         if (taxaSucesso > 0.95 && estado.concorrenciaAtual < CONFIG.concorrenciaMaxima) {
             estado.concorrenciaAtual = Math.min(
                 estado.concorrenciaAtual + 5,
                 CONFIG.concorrenciaMaxima
             );
-            console.log(`⚡ Concorrência aumentada para ${estado.concorrenciaAtual}`);
+            console.log(`⚡ Concorrência aumentada: ${concorrenciaAnterior} → ${estado.concorrenciaAtual} (taxa: ${(taxaSucesso*100).toFixed(1)}%)`);
         } else if (taxaSucesso < 0.80 && estado.concorrenciaAtual > CONFIG.concorrenciaMinima) {
             estado.concorrenciaAtual = Math.max(
                 estado.concorrenciaAtual - 5,
                 CONFIG.concorrenciaMinima
             );
-            console.log(`⚠️ Concorrência reduzida para ${estado.concorrenciaAtual}`);
+            console.log(`⚠️ Concorrência reduzida: ${concorrenciaAnterior} → ${estado.concorrenciaAtual} (taxa: ${(taxaSucesso*100).toFixed(1)}%)`);
         }
+
+        // Atualiza no modal
+        atualizarModal();
     }
 
     // ============================================
@@ -722,10 +728,10 @@
 
     function cancelarProcessamento() {
         if (confirm(
-            '⚠️ Confirma cancelar o processamento?\n\n' +
-            'Os registros já enviados com sucesso não serão revertidos.\n' +
-            'O checkpoint PERMANENTE será mantido.\n' +
-            'Você pode continuar em outra execução.\n\n' +
+            '⚠️ Confirma cancelar o processamento?\\n\\n' +
+            'Os registros já enviados com sucesso não serão revertidos.\\n' +
+            'O checkpoint PERMANENTE será mantido.\\n' +
+            'Você pode continuar em outra execução.\\n\\n' +
             'Cancelar?'
         )) {
             estado.cancelado = true;
@@ -738,6 +744,57 @@
         }
     }
 
+    // ✨ NOVO: Ajustar workers em tempo real
+    window.ajustarWorkers = function(delta) {
+        const novo = estado.concorrenciaAtual + delta;
+        if (novo < CONFIG.concorrenciaMinima) {
+            alert(`⚠️ Mínimo: ${CONFIG.concorrenciaMinima} workers`);
+            return;
+        }
+        if (novo > CONFIG.concorrenciaMaxima) {
+            alert(`⚠️ Máximo: ${CONFIG.concorrenciaMaxima} workers`);
+            return;
+        }
+        estado.concorrenciaAtual = novo;
+        console.log(`⚡ Workers ajustado manualmente: ${novo}`);
+        atualizarModal();
+    };
+
+    window.aplicarLimitesWorkers = function() {
+        const minInput = document.getElementById('workersMin');
+        const maxInput = document.getElementById('workersMax');
+
+        const min = parseInt(minInput.value);
+        const max = parseInt(maxInput.value);
+
+        if (min < 1 || max < 1) {
+            alert('⚠️ Valores devem ser maiores que 0');
+            return;
+        }
+
+        if (min > max) {
+            alert('⚠️ Mínimo não pode ser maior que máximo');
+            return;
+        }
+
+        CONFIG.concorrenciaMinima = min;
+        CONFIG.concorrenciaMaxima = max;
+
+        // Ajusta atual se estiver fora dos limites
+        if (estado.concorrenciaAtual < min) {
+            estado.concorrenciaAtual = min;
+        }
+        if (estado.concorrenciaAtual > max) {
+            estado.concorrenciaAtual = max;
+        }
+
+        console.log(`⚙️ Limites atualizados: ${min} - ${max}`);
+        console.log(`⚡ Workers atual: ${estado.concorrenciaAtual}`);
+
+        alert(`✅ Limites aplicados!\\n\\nMín: ${min}\\nMáx: ${max}\\nAtual: ${estado.concorrenciaAtual}`);
+        atualizarModal();
+    };
+
     async function iniciarReenvioAPI() {
         if (estado.processando) {
             alert('⚠️ Já existe um processamento em andamento!');
@@ -746,7 +803,7 @@
 
         if (!TOKEN_GLOBAL) {
             const tentarManual = confirm(
-                '⚠️ TOKEN NÃO DETECTADO\n\n' +
+                '⚠️ TOKEN NÃO DETECTADO\\n\\n' +
                 'Deseja fornecê-lo manualmente?'
             );
 
@@ -756,40 +813,39 @@
                     return;
                 }
             } else {
-                alert('❌ Token necessário!\n\nDica: Faça uma pesquisa no sistema.');
+                alert('❌ Token necessário!\\n\\nDica: Faça uma pesquisa no sistema.');
                 return;
             }
         }
 
         const resumo = checkpointManager.getResumo();
-        let mensagemInicial = '🚀 Iniciar reenvio via API?\n\n';
+        let mensagemInicial = '🚀 Iniciar reenvio via API?\\n\\n';
 
         if (resumo && resumo.idsSucesso > 0) {
             mensagemInicial +=
-                `💾 CHECKPOINT ATIVO:\n` +
-                `   • ${resumo.idsSucesso} IDs já tiveram SUCESSO\n` +
-                `   • Esses IDs serão PULADOS automaticamente\n` +
-                `   • Apenas registros sem sucesso serão processados\n\n`;
+                `💾 CHECKPOINT ATIVO:\\n` +
+                `   • ${resumo.idsSucesso} IDs já tiveram SUCESSO\\n` +
+                `   • Esses IDs serão PULADOS automaticamente\\n` +
+                `   • Apenas registros sem sucesso serão processados\\n\\n`;
         }
 
         mensagemInicial +=
-            `⚙️ CONFIGURAÇÕES:\n` +
-            `   • Paginação: ${CONFIG.registrosPorPagina} registros/página\n` +
-            `   • Concorrência: ${CONFIG.concorrenciaInicial} → ${CONFIG.concorrenciaMaxima}\n` +
-            `   • Retry: ${CONFIG.maxRetentativas}x\n` +
-            `   • Checkpoint: ${CONFIG.habilitarCheckpoint ? 'ATIVO (permanente)' : 'DESATIVADO'}\n`;
+            `⚙️ CONFIGURAÇÕES:\\n` +
+            `   • Paginação: ${CONFIG.registrosPorPagina} registros/página\\n` +
+            `   • Concorrência: ${CONFIG.concorrenciaInicial} → ${CONFIG.concorrenciaMaxima}\\n` +
+            `   • Retry: ${CONFIG.maxRetentativas}x\\n` +
+            `   • Checkpoint: ${CONFIG.habilitarCheckpoint ? 'ATIVO (permanente)' : 'DESATIVADO'}\\n`;
 
-        // ✨ Mostra filtro de data
         if (CONFIG.habilitarFiltroData) {
             mensagemInicial +=
-                `   • Filtro de Período: ${CONFIG.dataInicio} até ${CONFIG.dataFim}\n`;
+                `   • Filtro de Período: ${CONFIG.dataInicio} até ${CONFIG.dataFim}\\n`;
         } else {
-            mensagemInicial += `   • Filtro de Período: DESATIVADO (todos)\n`;
+            mensagemInicial += `   • Filtro de Período: DESATIVADO (todos)\\n`;
         }
-        mensagemInicial += '\n';
+        mensagemInicial += '\\n';
 
         if (resumo && resumo.totalExecucoes > 0) {
-            mensagemInicial += `📊 Execuções anteriores: ${resumo.totalExecucoes}\n\n`;
+            mensagemInicial += `📊 Execuções anteriores: ${resumo.totalExecucoes}\\n\\n`;
         }
 
         mensagemInicial += 'Continuar?';
@@ -820,7 +876,7 @@
         };
 
         criarModal();
-        console.log('🚀 Iniciando reenvio via API Direct v13.3.3...');
+        console.log('🚀 Iniciando reenvio via API Direct v13.3.4...');
         console.log(`💾 Checkpoint permanente: ${resumo ? resumo.idsSucesso : 0} IDs com sucesso`);
         if (CONFIG.habilitarFiltroData) {
             console.log(`📅 Período: ${CONFIG.dataInicio} até ${CONFIG.dataFim}`);
@@ -845,8 +901,8 @@
             if (estado.totalBuscados === 0) {
                 let msg = '⚠️ Não há registros com erro para processar!';
                 if (CONFIG.habilitarFiltroData) {
-                    msg += `\n\nPeríodo configurado: ${CONFIG.dataInicio} até ${CONFIG.dataFim}`;
-                    msg += '\n\nDica: Verifique se há registros neste período ou ajuste as datas nas Configurações.';
+                    msg += `\\n\\nPeríodo configurado: ${CONFIG.dataInicio} até ${CONFIG.dataFim}`;
+                    msg += '\\n\\nDica: Verifique se há registros neste período ou ajuste as datas nas Configurações.';
                 }
                 alert(msg);
                 fecharModal();
@@ -917,30 +973,30 @@
 
         setTimeout(() => {
             const mensagem = cancelado
-                ? `⚠️ PROCESSAMENTO CANCELADO\n\n`
-                : `🎊 REENVIO FINALIZADO!\n\n`;
+                ? `⚠️ PROCESSAMENTO CANCELADO\\n\\n`
+                : `🎊 REENVIO FINALIZADO!\\n\\n`;
 
             let textoCompleto = mensagem +
-                `ESTA EXECUÇÃO:\n` +
-                `  ✅ Sucesso: ${estado.totalSucesso}\n` +
-                `  ❌ Erros: ${estado.totalErro}\n` +
-                `  ⏱️ Timeouts: ${estado.totalTimeout}\n`;
+                `ESTA EXECUÇÃO:\\n` +
+                `  ✅ Sucesso: ${estado.totalSucesso}\\n` +
+                `  ❌ Erros: ${estado.totalErro}\\n` +
+                `  ⏱️ Timeouts: ${estado.totalTimeout}\\n`;
 
             if (estado.totalPulados > 0) {
-                textoCompleto += `  ⏭️ Pulados: ${estado.totalPulados}\n`;
+                textoCompleto += `  ⏭️ Pulados: ${estado.totalPulados}\\n`;
             }
 
             textoCompleto +=
-                `\nCHECKPOINT PERMANENTE:\n` +
-                `  💾 Total com sucesso: ${resumo.idsSucesso}\n` +
-                `  📊 Total execuções: ${resumo.totalExecucoes}\n`;
+                `\\nCHECKPOINT PERMANENTE:\\n` +
+                `  💾 Total com sucesso: ${resumo.idsSucesso}\\n` +
+                `  📊 Total execuções: ${resumo.totalExecucoes}\\n`;
 
             if (CONFIG.habilitarFiltroData) {
-                textoCompleto += `\nPERÍODO FILTRADO:\n` +
-                                `  📅 ${CONFIG.dataInicio} até ${CONFIG.dataFim}\n`;
+                textoCompleto += `\\nPERÍODO FILTRADO:\\n` +
+                                `  📅 ${CONFIG.dataInicio} até ${CONFIG.dataFim}\\n`;
             }
 
-            textoCompleto += `\nExportar relatório CSV?`;
+            textoCompleto += `\\nExportar relatório CSV?`;
 
             const confirmExport = confirm(textoCompleto);
 
@@ -953,12 +1009,8 @@
         }, 500);
     }
 
-    // (continua na próxima parte...)
-
-    // (continua após finalizarProcessamento...)
-
     // ============================================
-    // 🎨 INTERFACE
+    // 🎨 INTERFACE COM CONTROLES DINÂMICOS
     // ============================================
 
     function criarModal() {
@@ -971,13 +1023,63 @@
                         background: rgba(0,0,0,0.7); z-index: 999999; display: flex;
                         align-items: center; justify-content: center;">
                 <div style="background: white; padding: 30px; border-radius: 8px;
-                            min-width: 600px; max-width: 800px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
+                            min-width: 650px; max-width: 850px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
                     <h2 style="margin: 0 0 20px 0; color: #00bcd4; text-align: center;">
-                        🚀 API Direct v13.3.3
+                        🚀 API Direct v13.3.4
                     </h2>
 
                     <div id="apiStatus" style="font-size: 14px; color: #666; margin-bottom: 15px; text-align: center; font-weight: bold;">
                         Iniciando...
+                    </div>
+
+                    <!-- ✨ NOVO: Controles de Workers -->
+                    <div style="background: #e3f2fd; padding: 15px; border-radius: 4px; margin-bottom: 15px;">
+                        <div style="display: grid; grid-template-columns: 1fr auto 1fr; gap: 15px; align-items: center;">
+                            <div>
+                                <label style="font-size: 11px; font-weight: bold; display: block; margin-bottom: 5px;">
+                                    Mín Workers:
+                                </label>
+                                <input type="number" id="workersMin" value="${CONFIG.concorrenciaMinima}"
+                                       min="1" max="200"
+                                       style="width: 100%; padding: 6px; border: 1px solid #90caf9; border-radius: 4px;">
+                            </div>
+                            
+                            <div style="text-align: center;">
+                                <div style="font-weight: bold; font-size: 12px; color: #666; margin-bottom: 5px;">
+                                    Workers Atual
+                                </div>
+                                <div style="font-size: 24px; font-weight: bold; color: #00bcd4; padding: 5px 0;">
+                                    <span id="apiWorkers">${CONFIG.concorrenciaInicial}</span>
+                                </div>
+                                <div style="display: flex; gap: 5px; justify-content: center; margin-top: 5px;">
+                                    <button onclick="window.ajustarWorkers(-5)"
+                                            style="padding: 5px 12px; background: #ff9800; color: white; border: none;
+                                                   border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 14px;">
+                                        -5
+                                    </button>
+                                    <button onclick="window.ajustarWorkers(+5)"
+                                            style="padding: 5px 12px; background: #4caf50; color: white; border: none;
+                                                   border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 14px;">
+                                        +5
+                                    </button>
+                                </div>
+                            </div>
+                            
+                            <div>
+                                <label style="font-size: 11px; font-weight: bold; display: block; margin-bottom: 5px;">
+                                    Máx Workers:
+                                </label>
+                                <input type="number" id="workersMax" value="${CONFIG.concorrenciaMaxima}"
+                                       min="1" max="200"
+                                       style="width: 100%; padding: 6px; border: 1px solid #90caf9; border-radius: 4px;">
+                            </div>
+                        </div>
+                        
+                        <button onclick="window.aplicarLimitesWorkers()"
+                                style="width: 100%; margin-top: 10px; padding: 8px; background: #2196f3; color: white;
+                                       border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 12px;">
+                            ✅ Aplicar Limites
+                        </button>
                     </div>
 
                     <div style="background: #f5f5f5; padding: 20px; border-radius: 4px; margin-bottom: 20px;">
@@ -1011,8 +1113,8 @@
                                 <span id="apiPulados" style="float: right; color: #9c27b0; font-weight: bold;">0</span>
                             </div>
                             <div>
-                                <strong>⚡ Workers:</strong>
-                                <span id="apiWorkers" style="float: right; color: #00bcd4; font-weight: bold;">${CONFIG.concorrenciaInicial}</span>
+                                <strong>🔄 Retries:</strong>
+                                <span id="apiRetries" style="float: right; color: #795548; font-weight: bold;">0</span>
                             </div>
                             <div>
                                 <strong>⏱️ Tempo:</strong>
@@ -1120,6 +1222,7 @@
             apiErros: estado.totalErro,
             apiTimeouts: estado.totalTimeout,
             apiPulados: estado.totalPulados,
+            apiRetries: estado.totalRetentativas,
             apiWorkers: estado.concorrenciaAtual,
             apiProgresso: `${progresso}%`,
             apiTempo: `${tempoDecorrido}s`,
@@ -1205,7 +1308,7 @@
         const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
         const link = document.createElement('a');
         link.href = URL.createObjectURL(blob);
-        link.download = `reenvio_api_v13.3.3_${new Date().toISOString().split('T')[0]}.csv`;
+        link.download = `reenvio_api_v13.3.4_${new Date().toISOString().split('T')[0]}.csv`;
         link.id = 'exportarCSVBtn';
         link.click();
 
@@ -1213,7 +1316,7 @@
     }
 
     // ============================================
-    // ⚙️ CONFIGURAÇÕES COM FILTRO DE DATA E TIMEOUT
+    // ⚙️ CONFIGURAÇÕES
     // ============================================
 
     function abrirConfiguracoes() {
@@ -1310,7 +1413,6 @@
 
                     <hr style="margin: 25px 0; border: none; border-top: 2px solid #e0e0e0;">
 
-                    <!-- ✨ NOVO: Filtro de Período de Datas -->
                     <div style="margin-bottom: 20px; background: #fff3e0; padding: 15px; border-radius: 4px; border: 2px solid #ff9800;">
                         <label style="display: flex; align-items: center; cursor: pointer; margin-bottom: 15px;">
                             <input type="checkbox" id="cfgFiltroData" ${CONFIG.habilitarFiltroData ? 'checked' : ''}
@@ -1375,7 +1477,6 @@
             CONFIG.ajusteAutomatico = document.getElementById('cfgAjusteAuto').checked;
             CONFIG.habilitarCheckpoint = document.getElementById('cfgCheckpoint').checked;
 
-            // Validação de timeout
             if (CONFIG.timeoutRequisicao < 5000) {
                 alert('⚠️ Timeout muito baixo! Mínimo recomendado: 5000ms (5s)');
                 return;
@@ -1383,21 +1484,19 @@
 
             if (CONFIG.timeoutRequisicao > 120000) {
                 if (!confirm(
-                    '⚠️ Timeout muito alto!\n\n' +
-                    `Timeout configurado: ${CONFIG.timeoutRequisicao}ms (${CONFIG.timeoutRequisicao/1000}s)\n\n` +
-                    'Timeouts altos podem travar o processamento se houver problemas na rede.\n\n' +
+                    '⚠️ Timeout muito alto!\\n\\n' +
+                    `Timeout configurado: ${CONFIG.timeoutRequisicao}ms (${CONFIG.timeoutRequisicao/1000}s)\\n\\n` +
+                    'Timeouts altos podem travar o processamento se houver problemas na rede.\\n\\n' +
                     'Continuar mesmo assim?'
                 )) {
                     return;
                 }
             }
 
-            // Captura configurações de data
             CONFIG.habilitarFiltroData = document.getElementById('cfgFiltroData').checked;
             CONFIG.dataInicio = document.getElementById('cfgDataInicio').value;
             CONFIG.dataFim = document.getElementById('cfgDataFim').value;
 
-            // Validação de datas
             if (CONFIG.habilitarFiltroData) {
                 const inicio = new Date(CONFIG.dataInicio);
                 const fim = new Date(CONFIG.dataFim);
@@ -1412,9 +1511,9 @@
 
                 if (fim > hoje) {
                     if (!confirm(
-                        '⚠️ Data de fim está no futuro!\n\n' +
-                        `Data fim: ${CONFIG.dataFim}\n` +
-                        `Hoje: ${hoje.toISOString().split('T')[0]}\n\n` +
+                        '⚠️ Data de fim está no futuro!\\n\\n' +
+                        `Data fim: ${CONFIG.dataFim}\\n` +
+                        `Hoje: ${hoje.toISOString().split('T')[0]}\\n\\n` +
                         'Continuar mesmo assim?'
                     )) {
                         return;
@@ -1424,13 +1523,13 @@
 
             localStorage.setItem('RNDS_CONFIG', JSON.stringify(CONFIG));
 
-            let msg = '✅ Configurações salvas!\n\n';
-            msg += `⏱️ Timeout: ${CONFIG.timeoutRequisicao}ms (${CONFIG.timeoutRequisicao/1000}s)\n`;
+            let msg = '✅ Configurações salvas!\\n\\n';
+            msg += `⏱️ Timeout: ${CONFIG.timeoutRequisicao}ms (${CONFIG.timeoutRequisicao/1000}s)\\n`;
             
             if (CONFIG.habilitarFiltroData) {
-                msg += `\n📅 Filtro de período ATIVO:\n${CONFIG.dataInicio} até ${CONFIG.dataFim}`;
+                msg += `\\n📅 Filtro de período ATIVO:\\n${CONFIG.dataInicio} até ${CONFIG.dataFim}`;
             } else {
-                msg += '\n📅 Filtro de período DESATIVADO (buscará todos os registros)';
+                msg += '\\n📅 Filtro de período DESATIVADO (buscará todos os registros)';
             }
 
             alert(msg);
@@ -1462,23 +1561,23 @@
         }
 
         const historico = checkpointManager.getHistorico();
-        let mensagem = '💾 CHECKPOINT PERMANENTE\n\n' +
-                      `Data: ${resumo.dataCheckpoint.toLocaleString()}\n` +
-                      `IDs com SUCESSO: ${resumo.idsSucesso}\n` +
-                      `Execuções: ${resumo.totalExecucoes}\n\n`;
+        let mensagem = '💾 CHECKPOINT PERMANENTE\\n\\n' +
+                      `Data: ${resumo.dataCheckpoint.toLocaleString()}\\n` +
+                      `IDs com SUCESSO: ${resumo.idsSucesso}\\n` +
+                      `Execuções: ${resumo.totalExecucoes}\\n\\n`;
 
         if (historico.length > 0) {
-            mensagem += 'HISTÓRICO:\n';
+            mensagem += 'HISTÓRICO:\\n';
             historico.slice(-5).forEach(h => {
-                mensagem += `  ${h.numero}. ${h.data} - ${h.sucessos} sucessos\n`;
+                mensagem += `  ${h.numero}. ${h.data} - ${h.sucessos} sucessos\\n`;
             });
-            mensagem += '\n';
+            mensagem += '\\n';
         }
 
         mensagem +=
-            '✅ IDs com sucesso são PERMANENTES\n' +
-            '✅ Serão pulados em TODAS as execuções\n' +
-            '🔄 Erros/timeouts tentados novamente\n\n' +
+            '✅ IDs com sucesso são PERMANENTES\\n' +
+            '✅ Serão pulados em TODAS as execuções\\n' +
+            '🔄 Erros/timeouts tentados novamente\\n\\n' +
             'Deseja LIMPAR o checkpoint permanente?';
 
         if (confirm(mensagem)) {
@@ -1517,7 +1616,7 @@
         `;
         btnToken.onclick = () => {
             if (TOKEN_GLOBAL) {
-                const copiar = confirm(`🔑 TOKEN:\n\n${TOKEN_GLOBAL}\n\n\nCopiar?`);
+                const copiar = confirm(`🔑 TOKEN:\\n\\n${TOKEN_GLOBAL}\\n\\n\\nCopiar?`);
                 if (copiar) {
                     navigator.clipboard.writeText(TOKEN_GLOBAL);
                     alert('✅ Token copiado!');
@@ -1594,13 +1693,14 @@
     function inicializar() {
         console.log('');
         console.log('═══════════════════════════════════════════════════════════');
-        console.log('🚀 SPRNDS - API Direct v13.3.3');
+        console.log('🚀 SPRNDS - API Direct v13.3.4');
         console.log('═══════════════════════════════════════════════════════════');
-        console.log('✨ NOVO NA v13.3.3:');
-        console.log('  • Filtro de período de datas configurável');
-        console.log('  • Data início/fim personalizáveis');
-        console.log('  • Checkpoint PERMANENTE mantido');
-        console.log('  • Timeout configurável na interface');
+        console.log('✨ NOVO NA v13.3.4:');
+        console.log('  • Ajuste automático CORRIGIDO (funciona durante processamento)');
+        console.log('  • Controles dinâmicos de workers no modal');
+        console.log('  • Ajuste de limites min/max em tempo real');
+        console.log('  • Botões +/- para ajuste rápido');
+        console.log('  • Feedback visual de mudanças');
         console.log('═══════════════════════════════════════════════════════════');
         console.log('');
 
