@@ -18,12 +18,12 @@
     // ⚙️ CONFIGURAÇÕES PADRÃO
     // ============================================
     const CONFIG = {
-        concorrenciaInicial: 15,
-        concorrenciaMaxima: 50,
+        concorrenciaInicial: 25,
+        concorrenciaMaxima: 500,
         concorrenciaMinima: 5,
-        registrosPorPagina: 15,
+        registrosPorPagina: 500,
         pausaEntreLotes: 200,
-        timeoutRequisicao: 30000,
+        timeoutRequisicao: 120000,
         maxRetentativas: 2,
         ajusteAutomatico: true,
         limiteMaximoPaginas: 100,
