@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         SPRNDS - Reenviar v13.4.3
+// @name         SPRNDS - Reenviar v13.4.4
 // @namespace    http://tampermonkey.net/
-// @version      13.4.3
+// @version      13.4.4
 // @description  Auto-tuning inteligente + busca por status configurável (PENDING/ERROR)
 // @author       Renato Krebs Rosa
 // @match        *://*/rnds/*
