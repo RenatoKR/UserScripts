@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         SPRNDS - Reenviar v13.4.2
+// @name         SPRNDS - Reenviar v13.4.3
 // @namespace    http://tampermonkey.net/
-// @version      13.4.2
-// @description  Auto-tuning inteligente com análise de latência
+// @version      13.4.3
+// @description  Auto-tuning inteligente + busca por status configurável (PENDING/ERROR)
 // @author       Renato Krebs Rosa
 // @match        *://*/rnds/*
 // @grant        none
@@ -32,11 +32,13 @@
         salvarCheckpointACada: 10,
         habilitarFiltroData: false,
         dataInicio: '2020-01-01',
-        dataFim: '2026-02-15',
+        dataFim: '2026-02-16',
         // ✨ NOVOS: Auto-tuning inteligente
         autoTuningAgressivo: false,
         intervaloAnalise: 10,
-        logDetalhado: true
+        logDetalhado: true,
+        // ✨ NOVO: Filtro de status
+        statusBuscar: 'AMBOS' // 'ERROR', 'PENDING', 'AMBOS'
     };
 
     // ============================================
@@ -60,7 +62,7 @@
                     totalTimeout: 0,
                     totalRetentativas: 0
                 },
-                versao: '13.4.2',
+                versao: '13.4.3',
                 execucoes: []
             };
         }
@@ -360,17 +362,17 @@
     }
 
     // ============================================
-    // 🌐 API - PAGINAÇÃO COM FILTRO DE DATA
+    // 🌐 API - PAGINAÇÃO COM FILTRO DE DATA E STATUS
     // ============================================
 
-    async function buscarVacinasComErro(page = 0, limit = 15) {
-        let url = `/rnds/api/vaccine-sync?sort=false:desc&page=${page}&limit=${limit}&sendStatus=ERROR`;
+    async function buscarVacinasComErro(page = 0, limit = 15, status = 'ERROR') {
+        let url = `/rnds/api/vaccine-sync?sort=false:desc&page=${page}&limit=${limit}&sendStatus=${status}`;
 
         if (CONFIG.habilitarFiltroData) {
             url += `&between=vaccineDate,${CONFIG.dataInicio},${CONFIG.dataFim}`;
         }
 
-        console.log(`🔍 Buscando página ${page}...`);
+        console.log(`🔍 Buscando página ${page} (status: ${status})...`);
         if (CONFIG.habilitarFiltroData) {
             console.log(`   📅 Período: ${CONFIG.dataInicio} até ${CONFIG.dataFim}`);
         }
@@ -424,16 +426,18 @@
                 content: registros,
                 totalElements: totalElementos,
                 totalPages: totalPaginas,
-                currentPage: page
+                currentPage: page,
+                status: status
             };
 
         } catch (erro) {
-            console.error(`❌ Erro ao buscar página ${page}:`, erro);
+            console.error(`❌ Erro ao buscar página ${page} (${status}):`, erro);
             return {
                 content: [],
                 totalElements: 0,
                 totalPages: 0,
-                currentPage: page
+                currentPage: page,
+                status: status
             };
         }
     }
@@ -446,6 +450,12 @@
         console.log('📌 Estratégia: Replicar comportamento da aplicação web');
         console.log(`📌 Limite por página: ${CONFIG.registrosPorPagina} registros`);
 
+        // ✨ NOVO: Exibe status sendo buscado
+        const statusTexto = CONFIG.statusBuscar === 'ERROR' ? 'ERROR' :
+                           CONFIG.statusBuscar === 'PENDING' ? 'PENDING' :
+                           'ERROR + PENDING';
+        console.log(`📌 Status: ${statusTexto}`);
+
         if (CONFIG.habilitarFiltroData) {
             console.log(`📅 Filtro de período: ${CONFIG.dataInicio} até ${CONFIG.dataFim}`);
         } else {
@@ -454,76 +464,90 @@
 
         console.log('');
 
-        let page = 0;
         let todosRegistros = [];
-        let totalElementosNaBase = 0;
-        let totalPaginasNaBase = 0;
 
-        while (page < CONFIG.limiteMaximoPaginas) {
-            if (estado.cancelado) {
-                console.log('⚠️ Busca cancelada pelo usuário');
-                break;
-            }
-
-            estado.paginaAtual = page + 1;
-
-            atualizarModal(
-                `Buscando página ${page + 1}${totalPaginasNaBase > 0 ? `/${totalPaginasNaBase}` : ''}...`
-            );
-
-            const dados = await buscarVacinasComErro(page, CONFIG.registrosPorPagina);
-
-            if (dados.totalElements > 0 && dados.totalElements !== totalElementosNaBase) {
-                totalElementosNaBase = dados.totalElements;
-                console.log(`📊 API reporta: ${totalElementosNaBase} registros no total`);
-            }
-
-            if (dados.totalPages > 0 && dados.totalPages !== totalPaginasNaBase) {
-                totalPaginasNaBase = dados.totalPages;
-                estado.totalPaginas = totalPaginasNaBase;
-                console.log(`📄 API reporta: ${totalPaginasNaBase} páginas no total`);
-            }
-
-            if (!dados.content || dados.content.length === 0) {
-                console.log('');
-                console.log('✅ FIM: Página vazia (sem registros)');
-                break;
-            }
-
-            const qtdNaPagina = dados.content.length;
-            todosRegistros.push(...dados.content);
-            estado.totalBuscados = todosRegistros.length;
-
-            console.log(`   💾 Acumulado: ${todosRegistros.length} registros`);
-
-            if (qtdNaPagina < CONFIG.registrosPorPagina) {
-                console.log('');
-                console.log(`✅ FIM: Última página detectada (${qtdNaPagina} < ${CONFIG.registrosPorPagina})`);
-                break;
-            }
-
-            if (totalPaginasNaBase > 0 && (page + 1) >= totalPaginasNaBase) {
-                console.log('');
-                console.log(`✅ FIM: Todas as ${totalPaginasNaBase} páginas foram processadas`);
-                break;
-            }
-
-            if (totalElementosNaBase > 0 && todosRegistros.length >= totalElementosNaBase) {
-                console.log('');
-                console.log(`✅ FIM: Todos os ${totalElementosNaBase} registros foram buscados`);
-                break;
-            }
-
-            page++;
-            await new Promise(r => setTimeout(r, 100));
+        // ✨ NOVO: Busca baseada na configuração de status
+        const statusParaBuscar = [];
+        if (CONFIG.statusBuscar === 'ERROR') {
+            statusParaBuscar.push('ERROR');
+        } else if (CONFIG.statusBuscar === 'PENDING') {
+            statusParaBuscar.push('PENDING');
+        } else { // AMBOS
+            statusParaBuscar.push('ERROR', 'PENDING');
         }
 
-        if (page >= CONFIG.limiteMaximoPaginas) {
-            console.warn('');
-            console.warn(`⚠️ ATENÇÃO: Limite de segurança atingido (${CONFIG.limiteMaximoPaginas} páginas)`);
-            if (totalElementosNaBase > 0) {
-                console.warn(`⚠️ Existem ${totalElementosNaBase} registros mas buscamos apenas ${todosRegistros.length}`);
-                console.warn(`⚠️ Aumente CONFIG.limiteMaximoPaginas se necessário`);
+        for (const status of statusParaBuscar) {
+            console.log('');
+            console.log(`───────────────────────────────────────────────────────────`);
+            console.log(`📋 Buscando registros com status: ${status}`);
+            console.log(`───────────────────────────────────────────────────────────`);
+
+            let page = 0;
+            let totalElementosNaBase = 0;
+            let totalPaginasNaBase = 0;
+
+            while (page < CONFIG.limiteMaximoPaginas) {
+                if (estado.cancelado) {
+                    console.log('⚠️ Busca cancelada pelo usuário');
+                    break;
+                }
+
+                estado.paginaAtual = page + 1;
+
+                atualizarModal(
+                    `Buscando ${status} - página ${page + 1}${totalPaginasNaBase > 0 ? `/${totalPaginasNaBase}` : ''}...`
+                );
+
+                const dados = await buscarVacinasComErro(page, CONFIG.registrosPorPagina, status);
+
+                if (dados.totalElements > 0 && dados.totalElements !== totalElementosNaBase) {
+                    totalElementosNaBase = dados.totalElements;
+                    console.log(`📊 API reporta: ${totalElementosNaBase} registros no total (${status})`);
+                }
+
+                if (dados.totalPages > 0 && dados.totalPages !== totalPaginasNaBase) {
+                    totalPaginasNaBase = dados.totalPages;
+                    estado.totalPaginas = totalPaginasNaBase;
+                    console.log(`📄 API reporta: ${totalPaginasNaBase} páginas no total (${status})`);
+                }
+
+                if (!dados.content || dados.content.length === 0) {
+                    console.log('');
+                    console.log(`✅ FIM: Página vazia (sem registros ${status})`);
+                    break;
+                }
+
+                const qtdNaPagina = dados.content.length;
+                todosRegistros.push(...dados.content);
+                estado.totalBuscados = todosRegistros.length;
+
+                console.log(`   💾 Acumulado total: ${todosRegistros.length} registros`);
+
+                if (qtdNaPagina < CONFIG.registrosPorPagina) {
+                    console.log('');
+                    console.log(`✅ FIM: Última página detectada (${qtdNaPagina} < ${CONFIG.registrosPorPagina})`);
+                    break;
+                }
+
+                if (totalPaginasNaBase > 0 && (page + 1) >= totalPaginasNaBase) {
+                    console.log('');
+                    console.log(`✅ FIM: Todas as ${totalPaginasNaBase} páginas foram processadas`);
+                    break;
+                }
+
+                if (totalElementosNaBase > 0 && todosRegistros.length >= totalElementosNaBase) {
+                    console.log('');
+                    console.log(`✅ FIM: Todos os ${totalElementosNaBase} registros foram buscados`);
+                    break;
+                }
+
+                page++;
+                await new Promise(r => setTimeout(r, 100));
+            }
+
+            if (page >= CONFIG.limiteMaximoPaginas) {
+                console.warn('');
+                console.warn(`⚠️ ATENÇÃO: Limite de segurança atingido (${CONFIG.limiteMaximoPaginas} páginas) para ${status}`);
             }
         }
 
@@ -532,10 +556,7 @@
         console.log('📊 BUSCA FINALIZADA');
         console.log('═══════════════════════════════════════════════════════════');
         console.log(`✅ Registros obtidos: ${todosRegistros.length}`);
-        console.log(`📄 Páginas processadas: ${page}`);
-        if (totalElementosNaBase > 0) {
-            console.log(`📊 Total na base (reportado pela API): ${totalElementosNaBase}`);
-        }
+        console.log(`📋 Status buscados: ${statusTexto}`);
         if (CONFIG.habilitarFiltroData) {
             console.log(`📅 Período filtrado: ${CONFIG.dataInicio} até ${CONFIG.dataFim}`);
         }
@@ -1163,8 +1184,14 @@
                 `   • Apenas registros sem sucesso serão processados\\n\\n`;
         }
 
+        // ✨ NOVO: Exibe status configurado
+        const statusTexto = CONFIG.statusBuscar === 'ERROR' ? 'apenas ERROR' :
+                           CONFIG.statusBuscar === 'PENDING' ? 'apenas PENDING' :
+                           'ERROR + PENDING';
+
         mensagemInicial +=
             `⚙️ CONFIGURAÇÕES:\\n` +
+            `   • Status: ${statusTexto}\\n` +
             `   • Pool de Workers: ${CONFIG.concorrenciaInicial} → ${CONFIG.concorrenciaMaxima}\\n` +
             `   • Auto-tuning Inteligente: ${CONFIG.ajusteAutomatico ? 'ATIVO' : 'DESATIVADO'}\\n` +
             `   • Retry: ${CONFIG.maxRetentativas}x\\n` +
@@ -1221,9 +1248,10 @@
         };
 
         criarModal();
-        console.log('🚀 Iniciando reenvio via API Direct v13.4.2...');
+        console.log('🚀 Iniciando reenvio via API Direct v13.4.3...');
         console.log(`🏊 Pool de Workers Dinâmico habilitado`);
         console.log(`✨ Auto-tuning inteligente com análise de latência`);
+        console.log(`📋 Status a buscar: ${statusTexto}`);
         console.log(`💾 Checkpoint permanente: ${resumo ? resumo.idsSucesso : 0} IDs com sucesso`);
         if (CONFIG.habilitarFiltroData) {
             console.log(`📅 Período: ${CONFIG.dataInicio} até ${CONFIG.dataFim}`);
@@ -1246,11 +1274,12 @@
             }
 
             if (estado.totalBuscados === 0) {
-                let msg = '⚠️ Não há registros com erro para processar!';
+                let msg = '⚠️ Não há registros para processar!';
+                msg += `\\n\\nStatus configurado: ${statusTexto}`;
                 if (CONFIG.habilitarFiltroData) {
-                    msg += `\\n\\nPeríodo configurado: ${CONFIG.dataInicio} até ${CONFIG.dataFim}`;
-                    msg += '\\n\\nDica: Verifique se há registros neste período ou ajuste as datas nas Configurações.';
+                    msg += `\\nPeríodo: ${CONFIG.dataInicio} até ${CONFIG.dataFim}`;
                 }
+                msg += '\\n\\nDica: Verifique as configurações de status e período.';
                 alert(msg);
                 fecharModal();
                 estado.processando = false;
@@ -1292,6 +1321,10 @@
         const resumo = checkpointManager.getResumo();
         const analise = analisarPerformance();
 
+        const statusTexto = CONFIG.statusBuscar === 'ERROR' ? 'ERROR' :
+                           CONFIG.statusBuscar === 'PENDING' ? 'PENDING' :
+                           'ERROR + PENDING';
+
         console.log('');
         console.log('═══════════════════════════════════════════════════════════');
         console.log(cancelado ? '⚠️ PROCESSAMENTO CANCELADO!' : '🏁 PROCESSAMENTO FINALIZADO!');
@@ -1305,6 +1338,7 @@
         console.log(`    ⏱️ Tempo: ${tempoTotal}s (${Math.floor(tempoTotal/60)}min)`);
         console.log(`    ⚡ Velocidade: ${velocidade} reg/min`);
         console.log(`    📊 Taxa: ${taxaSucesso}%`);
+        console.log(`    📋 Status buscados: ${statusTexto}`);
         
         if (analise) {
             console.log('');
@@ -1350,7 +1384,8 @@
             }
 
             textoCompleto +=
-                `  ⚡ Velocidade: ${velocidade} reg/min\\n`;
+                `  ⚡ Velocidade: ${velocidade} reg/min\\n` +
+                `  📋 Status: ${statusTexto}\\n`;
                 
             if (analise) {
                 textoCompleto += `  📊 P95 final: ${analise.p95}ms\\n`;
@@ -1396,7 +1431,7 @@
                             min-width: 650px; max-width: 850px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);
                             margin: 20px;">
                     <h2 style="margin: 0 0 20px 0; color: #00bcd4; text-align: center;">
-                        🚀 API Direct v13.4.2
+                        🚀 API Direct v13.4.3
                     </h2>
 
                     <div id="apiStatus" style="font-size: 14px; color: #666; margin-bottom: 15px; text-align: center; font-weight: bold;">
@@ -1708,8 +1743,13 @@
         const resumo = checkpointManager.getResumo();
         const analise = analisarPerformance();
 
+        const statusTexto = CONFIG.statusBuscar === 'ERROR' ? 'ERROR' :
+                           CONFIG.statusBuscar === 'PENDING' ? 'PENDING' :
+                           'ERROR + PENDING';
+
         linhas.push('');
         linhas.push('ESTATÍSTICAS DESTA EXECUÇÃO');
+        linhas.push(`Status Buscados;${statusTexto}`);
         linhas.push(`Total Buscados;${estado.totalBuscados}`);
         linhas.push(`Total Páginas;${estado.paginaAtual}`);
         linhas.push(`Total Processados;${estado.totalProcessados}`);
@@ -1748,7 +1788,7 @@
         const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
         const link = document.createElement('a');
         link.href = URL.createObjectURL(blob);
-        link.download = `reenvio_api_v13.4.2_${new Date().toISOString().split('T')[0]}.csv`;
+        link.download = `reenvio_api_v13.4.3_${new Date().toISOString().split('T')[0]}.csv`;
         link.id = 'exportarCSVBtn';
         link.click();
 
@@ -1762,6 +1802,12 @@
     function abrirConfiguracoes() {
         const modalConfig = document.createElement('div');
         modalConfig.id = 'modalConfiguracoes';
+        
+        // ✨ NOVO: Determina qual radio button marcar
+        const errorChecked = CONFIG.statusBuscar === 'ERROR' ? 'checked' : '';
+        const pendingChecked = CONFIG.statusBuscar === 'PENDING' ? 'checked' : '';
+        const ambosChecked = CONFIG.statusBuscar === 'AMBOS' ? 'checked' : '';
+        
         modalConfig.innerHTML = `
             <div style="position: fixed; top: 0; left: 0; width: 100%; height: 100%;
                         background: rgba(0,0,0,0.7); z-index: 999999; display: flex;
@@ -1769,6 +1815,45 @@
                 <div style="background: white; padding: 30px; border-radius: 8px;
                             width: 600px; max-height: 90vh; overflow-y: auto; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
                     <h2 style="margin: 0 0 20px 0; color: #00bcd4;">⚙️ Configurações</h2>
+
+                    <!-- ✨ NOVO: Seleção de Status -->
+                    <div style="margin-bottom: 20px; background: #e8f5e9; padding: 15px; border-radius: 4px; border: 2px solid #4caf50;">
+                        <label style="display: block; margin-bottom: 10px; font-weight: bold; font-size: 16px; color: #2e7d32;">
+                            📋 Status dos Registros a Buscar
+                        </label>
+                        <div style="margin-bottom: 10px;">
+                            <label style="display: flex; align-items: center; cursor: pointer; padding: 8px; background: white; border-radius: 4px; margin-bottom: 8px;">
+                                <input type="radio" name="statusBuscar" value="ERROR" ${errorChecked}
+                                       style="margin-right: 10px; width: 18px; height: 18px; cursor: pointer;">
+                                <div>
+                                    <strong>❌ Apenas ERROR</strong>
+                                    <div style="font-size: 12px; color: #666; margin-top: 2px;">
+                                        Busca somente registros com erro no envio
+                                    </div>
+                                </div>
+                            </label>
+                            <label style="display: flex; align-items: center; cursor: pointer; padding: 8px; background: white; border-radius: 4px; margin-bottom: 8px;">
+                                <input type="radio" name="statusBuscar" value="PENDING" ${pendingChecked}
+                                       style="margin-right: 10px; width: 18px; height: 18px; cursor: pointer;">
+                                <div>
+                                    <strong>⏳ Apenas PENDING</strong>
+                                    <div style="font-size: 12px; color: #666; margin-top: 2px;">
+                                        Busca somente registros pendentes de envio
+                                    </div>
+                                </div>
+                            </label>
+                            <label style="display: flex; align-items: center; cursor: pointer; padding: 8px; background: white; border-radius: 4px;">
+                                <input type="radio" name="statusBuscar" value="AMBOS" ${ambosChecked}
+                                       style="margin-right: 10px; width: 18px; height: 18px; cursor: pointer;">
+                                <div>
+                                    <strong>📋 AMBOS (ERROR + PENDING)</strong>
+                                    <div style="font-size: 12px; color: #666; margin-top: 2px;">
+                                        Busca registros com erro E pendentes (recomendado)
+                                    </div>
+                                </div>
+                            </label>
+                        </div>
+                    </div>
 
                     <div style="margin-bottom: 20px;">
                         <label style="display: block; margin-bottom: 5px; font-weight: bold;">
@@ -1917,6 +2002,12 @@
             CONFIG.ajusteAutomatico = document.getElementById('cfgAjusteAuto').checked;
             CONFIG.habilitarCheckpoint = document.getElementById('cfgCheckpoint').checked;
 
+            // ✨ NOVO: Salva status selecionado
+            const statusSelecionado = document.querySelector('input[name="statusBuscar"]:checked');
+            if (statusSelecionado) {
+                CONFIG.statusBuscar = statusSelecionado.value;
+            }
+
             if (CONFIG.timeoutRequisicao < 5000) {
                 alert('⚠️ Timeout muito baixo! Mínimo recomendado: 5000ms (5s)');
                 return;
@@ -1963,7 +2054,12 @@
 
             localStorage.setItem('RNDS_CONFIG', JSON.stringify(CONFIG));
 
+            const statusTexto = CONFIG.statusBuscar === 'ERROR' ? 'apenas ERROR' :
+                               CONFIG.statusBuscar === 'PENDING' ? 'apenas PENDING' :
+                               'ERROR + PENDING (ambos)';
+
             let msg = '✅ Configurações salvas!\\n\\n';
+            msg += `📋 Status: ${statusTexto}\\n`;
             msg += `⏱️ Timeout: ${CONFIG.timeoutRequisicao}ms (${CONFIG.timeoutRequisicao/1000}s)\\n`;
             
             if (CONFIG.habilitarFiltroData) {
@@ -2133,15 +2229,13 @@
     function inicializar() {
         console.log('');
         console.log('═══════════════════════════════════════════════════════════');
-        console.log('🚀 SPRNDS - API Direct v13.4.2');
+        console.log('🚀 SPRNDS - API Direct v13.4.3');
         console.log('═══════════════════════════════════════════════════════════');
-        console.log('✨ NOVO NA v13.4.2:');
-        console.log('  • Auto-tuning inteligente com análise de latência');
-        console.log('  • Métricas P50, P95, P99 em tempo real');
-        console.log('  • 7 regras hierárquicas de decisão');
-        console.log('  • Detecção de tendências (crescente/decrescente/estável)');
-        console.log('  • Painel avançado com throughput e código de cor');
-        console.log('  • Decisões baseadas em dados reais, não apenas sucesso');
+        console.log('✨ NOVO NA v13.4.3:');
+        console.log('  • Busca registros com status PENDING além de ERROR');
+        console.log('  • Configuração para escolher: ERROR, PENDING ou AMBOS');
+        console.log('  • Interface intuitiva com radio buttons');
+        console.log('  • Busca otimizada em paralelo quando AMBOS selecionado');
         console.log('═══════════════════════════════════════════════════════════');
         console.log('');
 
@@ -2157,6 +2251,11 @@
             console.log(`   • Execuções anteriores: ${resumo.totalExecucoes}`);
             console.log('');
         }
+
+        const statusTexto = CONFIG.statusBuscar === 'ERROR' ? 'apenas ERROR' :
+                           CONFIG.statusBuscar === 'PENDING' ? 'apenas PENDING' :
+                           'ERROR + PENDING';
+        console.log(`📋 Status configurado: ${statusTexto}`);
 
         if (CONFIG.habilitarFiltroData) {
             console.log('📅 Filtro de período ATIVO:');
