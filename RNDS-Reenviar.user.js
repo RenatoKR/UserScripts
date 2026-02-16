@@ -18,7 +18,7 @@
     // ⚙️ CONFIGURAÇÕES PADRÃO
     // ============================================
     const CONFIG = {
-        concorrenciaInicial: 25,
+        concorrenciaInicial: 100,
         concorrenciaMaxima: 500,
         concorrenciaMinima: 5,
         registrosPorPagina: 500,
