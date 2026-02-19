@@ -36,6 +36,29 @@ Identifica visualmente se um agendamento é do tipo AG (Agendado) ou DI (Demanda
 
 ---
 
+### 4. SPRNDS - Reenviar
+Reenvia registros de vacinas com status de erro ou pendente para a RNDS (Rede Nacional de Dados em Saúde), com pool de workers dinâmico e auto-tuning inteligente de concorrência.
+
+**Recursos:**
+- Pool de Workers Dinâmico com auto-tuning inteligente de concorrência
+- Busca por status configurável: ERROR, PENDING ou AMBOS
+- Checkpoint permanente de IDs com sucesso (persiste entre execuções)
+- Filtro de período de datas opcional
+- Controle de pausa/retomada e cancelamento
+- Métricas de latência em tempo real (P50, P95, P99)
+- Exportação de relatório CSV
+
+**[📥 Instalar SPRNDS - Reenviar](https://raw.githubusercontent.com/RenatoKR/UserScripts/main/RNDS-Reenviar.user.js)**
+
+---
+
+### 5. RNDS - Reenviar API (Experimental)
+Versão experimental do reenvio de registros para a RNDS via chamadas diretas à API, ideal para testes e validações antes de usar a versão principal.
+
+**[📥 Instalar RNDS - Reenviar API Experimental](https://raw.githubusercontent.com/RenatoKR/UserScripts/main/RNDS-Reenviar-API-Experimental.user.js)**
+
+---
+
 ## 🔧 Como Instalar
 
 ### Passo 1: Instalar o Tampermonkey
