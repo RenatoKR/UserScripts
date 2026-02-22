@@ -807,6 +807,14 @@
             console.log(`🟢 Worker #${workerId} iniciado`);
             
             while (true) {
+                // ✨ CORREÇÃO 1: Encerrar se estivermos acima da concorrência atual
+                if (estado.workersAtivos > estado.concorrenciaAtual) {
+                    if (CONFIG.logDetalhado) {
+                        console.log(`📉 Worker #${workerId} encerrado (redução de concorrência)`);
+                    }
+                    break;
+                }
+
                 while (estado.pausado && !estado.cancelado) {
                     await new Promise(r => setTimeout(r, 500));
                 }
@@ -875,12 +883,23 @@
             console.log(`   • Velocidade: ${velocidade} reg/s`);
         }
         
-        const workersPromises = [];
-        for (let i = 0; i < estado.concorrenciaAtual; i++) {
-            workersPromises.push(worker(i + 1));
+        const workersPromises = new Set();
+        let proximoWorkerId = 1;
+        
+        // ✨ CORREÇÃO 1: Supervisor para adicionar novos workers dinamicamente
+        while (proximoIndice < totalRegistros && !estado.cancelado) {
+            while (estado.workersAtivos < estado.concorrenciaAtual && proximoIndice < totalRegistros) {
+                const id = proximoWorkerId++;
+                const p = worker(id).finally(() => workersPromises.delete(p));
+                workersPromises.add(p);
+            }
+            await new Promise(r => setTimeout(r, 250)); // Checa necessidades a cada 250ms
         }
         
-        await Promise.all(workersPromises);
+        // Aguarda os workers ativos terminarem suas requisições atuais
+        while (workersPromises.size > 0) {
+            await Promise.all(workersPromises);
+        }
         
         if (CONFIG.habilitarCheckpoint) {
             checkpointManager.salvar();
@@ -1784,7 +1803,7 @@
             linhas.push(`Data Fim;${CONFIG.dataFim}`);
         }
 
-        const csv = '\uFEFF' + linhas.join('\n');
+        const csv = '\\uFEFF' + linhas.join('\n');
         const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
         const link = document.createElement('a');
         link.href = URL.createObjectURL(blob);
