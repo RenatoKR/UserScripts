@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         SPRNDS - Reenviar v13.4.8
+// @name         SPRNDS - Reenviar v13.4.9
 // @namespace    http://tampermonkey.net/
-// @version      13.4.8
-// @description  Auto-tuning inteligente + busca por status configurável (PENDING/ERROR) + Otimizações + Fix Race Condition + Fix Await Workers
+// @version      13.4.9
+// @description  Auto-tuning inteligente + busca por status configurável (PENDING/ERROR) + Otimizações + Fix Race Condition + Fix Await Workers + Fix quebras de linha nos modais
 // @author       Renato Krebs Rosa
 // @match        *://*/rnds/*
 // @grant        none
@@ -14,7 +14,7 @@
 (function() {
     'use strict';
 
-    const VERSAO = '13.4.8';
+    const VERSAO = '13.4.9';
 
     // ============================================
     // ⚙️ CONFIGURAÇÕES PADRÃO
@@ -163,17 +163,17 @@
 
         limpar() {
             if (confirm(
-                '⚠️ ATENÇÃO: LIMPAR CHECKPOINT PERMANENTE\\n\\n' +
-                `Você tem ${this.checkpoint.idsSucesso.length} IDs com sucesso salvos.\\n\\n` +
-                'Ao limpar, TODOS os sucessos anteriores serão perdidos!\\n' +
-                'Todos os registros serão processados novamente do zero.\\n\\n' +
+                '⚠️ ATENÇÃO: LIMPAR CHECKPOINT PERMANENTE\n\n' +
+                `Você tem ${this.checkpoint.idsSucesso.length} IDs com sucesso salvos.\n\n` +
+                'Ao limpar, TODOS os sucessos anteriores serão perdidos!\n' +
+                'Todos os registros serão processados novamente do zero.\n\n' +
                 'Tem certeza que deseja LIMPAR?'
             )) {
                 localStorage.removeItem(this.STORAGE_KEY);
                 this.checkpoint = this.criar();
                 this.idsSet = new Set();
                 console.log('🗑️ Checkpoint limpo - todos os IDs serão reprocessados');
-                alert('✅ Checkpoint limpo com sucesso!\\n\\nNa próxima execução, todos os registros serão processados.');
+                alert('✅ Checkpoint limpo com sucesso!\n\nNa próxima execução, todos os registros serão processados.');
             }
         }
 
@@ -326,12 +326,12 @@
 
     function solicitarTokenManual() {
         const token = prompt(
-            '🔑 TOKEN NÃO DETECTADO\\n\\n' +
-            'Passos:\\n' +
-            '1. F12 → Network\\n' +
-            '2. Faça uma pesquisa\\n' +
-            '3. Clique em "/api/vaccine-sync"\\n' +
-            '4. Copie o header "Authorization"\\n\\n' +
+            '🔑 TOKEN NÃO DETECTADO\n\n' +
+            'Passos:\n' +
+            '1. F12 → Network\n' +
+            '2. Faça uma pesquisa\n' +
+            '3. Clique em "/api/vaccine-sync"\n' +
+            '4. Copie o header "Authorization"\n\n' +
             'Token:'
         );
 
@@ -1105,10 +1105,10 @@
 
     function cancelarProcessamento() {
         if (confirm(
-            '⚠️ Confirma cancelar o processamento?\\n\\n' +
-            'Os registros já enviados com sucesso não serão revertidos.\\n' +
-            'O checkpoint PERMANENTE será mantido.\\n' +
-            'Você pode continuar em outra execução.\\n\\n' +
+            '⚠️ Confirma cancelar o processamento?\n\n' +
+            'Os registros já enviados com sucesso não serão revertidos.\n' +
+            'O checkpoint PERMANENTE será mantido.\n' +
+            'Você pode continuar em outra execução.\n\n' +
             'Cancelar?'
         )) {
             estado.cancelado = true;
@@ -1166,7 +1166,7 @@
         console.log(`⚙️ Limites atualizados: ${min} - ${max}`);
         console.log(`⚡ Workers atual: ${estado.concorrenciaAtual}`);
 
-        alert(`✅ Limites aplicados!\\n\\nMín: ${min}\\nMáx: ${max}\\nAtual: ${estado.concorrenciaAtual}`);
+        alert(`✅ Limites aplicados!\n\nMín: ${min}\nMáx: ${max}\nAtual: ${estado.concorrenciaAtual}`);
         atualizarModal();
     };
 
@@ -1178,7 +1178,7 @@
 
         if (!TOKEN_GLOBAL) {
             const tentarManual = confirm(
-                '⚠️ TOKEN NÃO DETECTADO\\n\\n' +
+                '⚠️ TOKEN NÃO DETECTADO\n\n' +
                 'Deseja fornecê-lo manualmente?'
             );
 
@@ -1188,20 +1188,20 @@
                     return;
                 }
             } else {
-                alert('❌ Token necessário!\\n\\nDica: Faça uma pesquisa no sistema.');
+                alert('❌ Token necessário!\n\nDica: Faça uma pesquisa no sistema.');
                 return;
             }
         }
 
         const resumo = checkpointManager.getResumo();
-        let mensagemInicial = '🚀 Iniciar reenvio via API?\\n\\n';
+        let mensagemInicial = '🚀 Iniciar reenvio via API?\n\n';
 
         if (resumo && resumo.idsSucesso > 0) {
             mensagemInicial +=
-                `💾 CHECKPOINT ATIVO:\\n` +
-                `   • ${resumo.idsSucesso} IDs já tiveram SUCESSO\\n` +
-                `   • Esses IDs serão PULADOS automaticamente\\n` +
-                `   • Apenas registros sem sucesso serão processados\\n\\n`;
+                `💾 CHECKPOINT ATIVO:\n` +
+                `   • ${resumo.idsSucesso} IDs já tiveram SUCESSO\n` +
+                `   • Esses IDs serão PULADOS automaticamente\n` +
+                `   • Apenas registros sem sucesso serão processados\n\n`;
         }
 
         const statusTexto = CONFIG.statusBuscar === 'ERROR' ? 'apenas ERROR' :
@@ -1209,23 +1209,23 @@
                            'ERROR + PENDING';
 
         mensagemInicial +=
-            `⚙️ CONFIGURAÇÕES:\\n` +
-            `   • Status: ${statusTexto}\\n` +
-            `   • Pool de Workers: ${CONFIG.concorrenciaInicial} → ${CONFIG.concorrenciaMaxima}\\n` +
-            `   • Auto-tuning Inteligente: ${CONFIG.ajusteAutomatico ? 'ATIVO' : 'DESATIVADO'}\\n` +
-            `   • Retry: ${CONFIG.maxRetentativas}x\\n` +
-            `   • Checkpoint: ${CONFIG.habilitarCheckpoint ? 'ATIVO (permanente)' : 'DESATIVADO'}\\n`;
+            `⚙️ CONFIGURAÇÕES:\n` +
+            `   • Status: ${statusTexto}\n` +
+            `   • Pool de Workers: ${CONFIG.concorrenciaInicial} → ${CONFIG.concorrenciaMaxima}\n` +
+            `   • Auto-tuning Inteligente: ${CONFIG.ajusteAutomatico ? 'ATIVO' : 'DESATIVADO'}\n` +
+            `   • Retry: ${CONFIG.maxRetentativas}x\n` +
+            `   • Checkpoint: ${CONFIG.habilitarCheckpoint ? 'ATIVO (permanente)' : 'DESATIVADO'}\n`;
 
         if (CONFIG.habilitarFiltroData) {
             mensagemInicial +=
-                `   • Filtro de Período: ${CONFIG.dataInicio} até ${CONFIG.dataFim}\\n`;
+                `   • Filtro de Período: ${CONFIG.dataInicio} até ${CONFIG.dataFim}\n`;
         } else {
-            mensagemInicial += `   • Filtro de Período: DESATIVADO (todos)\\n`;
+            mensagemInicial += `   • Filtro de Período: DESATIVADO (todos)\n`;
         }
-        mensagemInicial += '\\n';
+        mensagemInicial += '\n';
 
         if (resumo && resumo.totalExecucoes > 0) {
-            mensagemInicial += `📊 Execuções anteriores: ${resumo.totalExecucoes}\\n\\n`;
+            mensagemInicial += `📊 Execuções anteriores: ${resumo.totalExecucoes}\n\n`;
         }
 
         mensagemInicial += 'Continuar?';
@@ -1294,11 +1294,11 @@
 
             if (estado.totalBuscados === 0) {
                 let msg = '⚠️ Não há registros para processar!';
-                msg += `\\n\\nStatus configurado: ${statusTexto}`;
+                msg += `\n\nStatus configurado: ${statusTexto}`;
                 if (CONFIG.habilitarFiltroData) {
-                    msg += `\\nPeríodo: ${CONFIG.dataInicio} até ${CONFIG.dataFim}`;
+                    msg += `\nPeríodo: ${CONFIG.dataInicio} até ${CONFIG.dataFim}`;
                 }
-                msg += '\\n\\nDica: Verifique as configurações de status e período.';
+                msg += '\n\nDica: Verifique as configurações de status e período.';
                 alert(msg);
                 fecharModal();
                 estado.processando = false;
@@ -1389,38 +1389,38 @@
 
         setTimeout(() => {
             const mensagem = cancelado
-                ? `⚠️ PROCESSAMENTO CANCELADO\\n\\n`
-                : `🎊 REENVIO FINALIZADO!\\n\\n`;
+                ? `⚠️ PROCESSAMENTO CANCELADO\n\n`
+                : `🎊 REENVIO FINALIZADO!\n\n`;
 
             let textoCompleto = mensagem +
-                `ESTA EXECUÇÃO:\\n` +
-                `  ✅ Sucesso: ${estado.totalSucesso}\\n` +
-                `  ❌ Erros: ${estado.totalErro}\\n` +
-                `  ⏱️ Timeouts: ${estado.totalTimeout}\\n`;
+                `ESTA EXECUÇÃO:\n` +
+                `  ✅ Sucesso: ${estado.totalSucesso}\n` +
+                `  ❌ Erros: ${estado.totalErro}\n` +
+                `  ⏱️ Timeouts: ${estado.totalTimeout}\n`;
 
             if (estado.totalPulados > 0) {
-                textoCompleto += `  ⏭️ Pulados: ${estado.totalPulados}\\n`;
+                textoCompleto += `  ⏭️ Pulados: ${estado.totalPulados}\n`;
             }
 
             textoCompleto +=
-                `  ⚡ Velocidade: ${velocidade} reg/min\\n` +
-                `  📋 Status: ${statusTexto}\\n`;
+                `  ⚡ Velocidade: ${velocidade} reg/min\n` +
+                `  📋 Status: ${statusTexto}\n`;
                 
             if (analise) {
-                textoCompleto += `  📊 P95 final: ${analise.p95}ms\\n`;
+                textoCompleto += `  📊 P95 final: ${analise.p95}ms\n`;
             }
             
             textoCompleto +=
-                `\\nCHECKPOINT PERMANENTE:\\n` +
-                `  💾 Total com sucesso: ${resumo.idsSucesso}\\n` +
-                `  📊 Total execuções: ${resumo.totalExecucoes}\\n`;
+                `\nCHECKPOINT PERMANENTE:\n` +
+                `  💾 Total com sucesso: ${resumo.idsSucesso}\n` +
+                `  📊 Total execuções: ${resumo.totalExecucoes}\n`;
 
             if (CONFIG.habilitarFiltroData) {
-                textoCompleto += `\\nPERÍODO FILTRADO:\\n` +
-                                `  📅 ${CONFIG.dataInicio} até ${CONFIG.dataFim}\\n`;
+                textoCompleto += `\nPERÍODO FILTRADO:\n` +
+                                `  📅 ${CONFIG.dataInicio} até ${CONFIG.dataFim}\n`;
             }
 
-            textoCompleto += `\\nExportar relatório CSV?`;
+            textoCompleto += `\nExportar relatório CSV?`;
 
             const confirmExport = confirm(textoCompleto);
 
@@ -2036,9 +2036,9 @@
 
             if (CONFIG.timeoutRequisicao > 120000) {
                 if (!confirm(
-                    '⚠️ Timeout muito alto!\\n\\n' +
-                    `Timeout configurado: ${CONFIG.timeoutRequisicao}ms (${CONFIG.timeoutRequisicao/1000}s)\\n\\n` +
-                    'Timeouts altos podem travar o processamento se houver problemas na rede.\\n\\n' +
+                    '⚠️ Timeout muito alto!\n\n' +
+                    `Timeout configurado: ${CONFIG.timeoutRequisicao}ms (${CONFIG.timeoutRequisicao/1000}s)\n\n` +
+                    'Timeouts altos podem travar o processamento se houver problemas na rede.\n\n' +
                     'Continuar mesmo assim?'
                 )) {
                     return;
@@ -2063,9 +2063,9 @@
 
                 if (fim > hoje) {
                     if (!confirm(
-                        '⚠️ Data de fim está no futuro!\\n\\n' +
-                        `Data fim: ${CONFIG.dataFim}\\n` +
-                        `Hoje: ${hoje.toISOString().split('T')[0]}\\n\\n` +
+                        '⚠️ Data de fim está no futuro!\n\n' +
+                        `Data fim: ${CONFIG.dataFim}\n` +
+                        `Hoje: ${hoje.toISOString().split('T')[0]}\n\n` +
                         'Continuar mesmo assim?'
                     )) {
                         return;
@@ -2079,14 +2079,14 @@
                                CONFIG.statusBuscar === 'PENDING' ? 'apenas PENDING' :
                                'ERROR + PENDING (ambos)';
 
-            let msg = '✅ Configurações salvas!\\n\\n';
-            msg += `📋 Status: ${statusTexto}\\n`;
-            msg += `⏱️ Timeout: ${CONFIG.timeoutRequisicao}ms (${CONFIG.timeoutRequisicao/1000}s)\\n`;
+            let msg = '✅ Configurações salvas!\n\n';
+            msg += `📋 Status: ${statusTexto}\n`;
+            msg += `⏱️ Timeout: ${CONFIG.timeoutRequisicao}ms (${CONFIG.timeoutRequisicao/1000}s)\n`;
             
             if (CONFIG.habilitarFiltroData) {
-                msg += `\\n📅 Filtro de período ATIVO:\\n${CONFIG.dataInicio} até ${CONFIG.dataFim}`;
+                msg += `\n📅 Filtro de período ATIVO:\n${CONFIG.dataInicio} até ${CONFIG.dataFim}`;
             } else {
-                msg += '\\n📅 Filtro de período DESATIVADO (buscará todos os registros)';
+                msg += '\n📅 Filtro de período DESATIVADO (buscará todos os registros)';
             }
 
             alert(msg);
@@ -2118,23 +2118,23 @@
         }
 
         const historico = checkpointManager.getHistorico();
-        let mensagem = '💾 CHECKPOINT PERMANENTE\\n\\n' +
-                      `Data: ${resumo.dataCheckpoint.toLocaleString()}\\n` +
-                      `IDs com SUCESSO: ${resumo.idsSucesso}\\n` +
-                      `Execuções: ${resumo.totalExecucoes}\\n\\n`;
+        let mensagem = '💾 CHECKPOINT PERMANENTE\n\n' +
+                      `Data: ${resumo.dataCheckpoint.toLocaleString()}\n` +
+                      `IDs com SUCESSO: ${resumo.idsSucesso}\n` +
+                      `Execuções: ${resumo.totalExecucoes}\n\n`;
 
         if (historico.length > 0) {
-            mensagem += 'HISTÓRICO:\\n';
+            mensagem += 'HISTÓRICO:\n';
             historico.slice(-5).forEach(h => {
-                mensagem += `  ${h.numero}. ${h.data} - ${h.sucessos} sucessos\\n`;
+                mensagem += `  ${h.numero}. ${h.data} - ${h.sucessos} sucessos\n`;
             });
-            mensagem += '\\n';
+            mensagem += '\n';
         }
 
         mensagem +=
-            '✅ IDs com sucesso são PERMANENTES\\n' +
-            '✅ Serão pulados em TODAS as execuções\\n' +
-            '🔄 Erros/timeouts tentados novamente\\n\\n' +
+            '✅ IDs com sucesso são PERMANENTES\n' +
+            '✅ Serão pulados em TODAS as execuções\n' +
+            '🔄 Erros/timeouts tentados novamente\n\n' +
             'Deseja LIMPAR o checkpoint permanente?';
 
         if (confirm(mensagem)) {
@@ -2173,7 +2173,7 @@
         `;
         btnToken.onclick = () => {
             if (TOKEN_GLOBAL) {
-                const copiar = confirm(`🔑 TOKEN:\\n\\n${TOKEN_GLOBAL}\\n\\n\\nCopiar?`);
+                const copiar = confirm(`🔑 TOKEN:\n\n${TOKEN_GLOBAL}\n\n\nCopiar?`);
                 if (copiar) {
                     navigator.clipboard.writeText(TOKEN_GLOBAL);
                     alert('✅ Token copiado!');
